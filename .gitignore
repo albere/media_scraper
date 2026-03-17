@@ -1,0 +1,23 @@
+pip freeze > requirements.txt
+```
+
+**Critical — create .gitignore before your first commit** to avoid accidentally committing your 1GB Guardian corpus or API keys:
+```
+# Data files
+*.csv
+*.json
+*.log
+nohup.out
+*_url_queue.csv
+*_corpus.csv
+guardian_corpus.csv
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.env
+
+# API keys
+*.env
+secrets.py
