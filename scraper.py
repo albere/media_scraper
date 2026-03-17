@@ -255,47 +255,48 @@ class CorpusScraper(runner.Runner):
 
     # ── Phase 1: URL Discovery ───────────────────────────────────────────
 
-    async def _discover_urls_for_month(self, sem, year, month):
-        sitemap_urls = self.config["sitemap_urls"](year, month)
-
-        async def fetch_one(sitemap_url):
-            await self.rate_limiter.acquire()
-            async with sem:
-                try:
-                    async with self.session.get(
-                        sitemap_url, timeout=aiohttp.ClientTimeout(total=30)
-                    ) as r:
-                        if r.status != 200:
-                            return []
-                        body = await r.read()
-                except Exception as e:
-                    self.log.warning(f"  [{self.args.outlet}] Sitemap error {sitemap_url}: {e}")
-                    return []
-
+    async def _fetch_sitemap(self, sem, sitemap_url, year, month):
+        await self.rate_limiter.acquire()
+        async with sem:
             try:
-                root = ET.fromstring(body)
-                ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-                found = []
-                for url_elem in root.findall("sm:url", ns):
-                    loc = url_elem.find("sm:loc", ns)
-                    lastmod = url_elem.find("sm:lastmod", ns)
-                    if loc is not None:
-                        date_str = (
-                            lastmod.text.strip()[:10] if lastmod is not None else None
-                        )
-                        found.append({
-                            "outlet": self.args.outlet,
-                            "url": loc.text.strip(),
-                            "sitemap_date": date_str,
-                            "year": year,
-                            "month": month,
-                        })
-                return found
+                async with self.session.get(
+                    sitemap_url, timeout=aiohttp.ClientTimeout(total=30)
+                ) as r:
+                    if r.status != 200:
+                        return []
+                    body = await r.read()
             except Exception as e:
-                self.log.warning(f"  [{self.args.outlet}] XML parse error {sitemap_url}: {e}")
+                self.log.warning(f"  [{self.args.outlet}] Sitemap error {sitemap_url}: {e}")
                 return []
 
-        all_results = await asyncio.gather(*[fetch_one(u) for u in sitemap_urls])
+        try:
+            root = ET.fromstring(body)
+            ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+            found = []
+            for url_elem in root.findall("sm:url", ns):
+                loc = url_elem.find("sm:loc", ns)
+                lastmod = url_elem.find("sm:lastmod", ns)
+                if loc is not None:
+                    date_str = (
+                        lastmod.text.strip()[:10] if lastmod is not None else None
+                    )
+                    found.append({
+                        "outlet": self.args.outlet,
+                        "url": loc.text.strip(),
+                        "sitemap_date": date_str,
+                        "year": year,
+                        "month": month,
+                    })
+            return found
+        except Exception as e:
+            self.log.warning(f"  [{self.args.outlet}] XML parse error {sitemap_url}: {e}")
+            return []
+
+    async def _discover_urls_for_month(self, sem, year, month):
+        sitemap_urls = self.config["sitemap_urls"](year, month)
+        all_results = await asyncio.gather(
+            *[self._fetch_sitemap(sem, u, year, month) for u in sitemap_urls]
+        )
         return [item for sublist in all_results for item in sublist]
 
     # ── Phase 2: Fetch + Extract ─────────────────────────────────────────
