@@ -48,6 +48,34 @@ jobs:
         echo "=== Corpus ==="
         wc -l *_corpus.csv 2>/dev/null || echo "No corpus file"
 
+    - name: Compute checksums
+      if: always()
+      run: |
+        echo "=== SHA256 checksums ==="
+        sha256sum *_url_queue.csv *_corpus.csv 2>/dev/null | sort | tee checksums.txt || true
+        if [ ! -s checksums.txt ]; then
+          echo "No files to checksum"
+        fi
+
+    - name: Regression check
+      if: always()
+      run: |
+        SLUG="${{ matrix.outlet }}"
+        SLUG="${SLUG,,}"
+        SLUG="${SLUG// /_}"
+        BASELINE=".github/workflows/checksums/${SLUG}.sha256"
+        if [ ! -s checksums.txt ]; then
+          echo "::warning::checksums.txt is missing or empty — skipping regression check"
+        elif [ ! -f "$BASELINE" ]; then
+          echo "::warning::No baseline found at $BASELINE — commit checksums.txt as $BASELINE to enable regression checks"
+        elif diff "$BASELINE" checksums.txt > /tmp/checksum_diff.txt; then
+          echo "✓ Checksums match baseline ($BASELINE)"
+        else
+          echo "::warning::Checksums differ from baseline ($BASELINE). Update $BASELINE if this change is intentional."
+          echo "--- diff (baseline vs current) ---"
+          cat /tmp/checksum_diff.txt
+        fi
+
     - name: Upload results
       if: always()
       uses: actions/upload-artifact@v4
@@ -56,3 +84,10 @@ jobs:
         path: |
           *_url_queue.csv
           *_corpus.csv
+
+    - name: Upload checksums
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: checksums-${{ matrix.outlet }}
+        path: checksums.txt
