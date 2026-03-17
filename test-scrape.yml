@@ -1,0 +1,58 @@
+name: Test scrape
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        outlet:
+        - "Daily Express"
+        - "Daily Star"
+        - "The Independent"
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+        cache: "pip"
+
+    - run: pip install -r requirements.txt
+
+    - name: Test scrape - ${{ matrix.outlet }}
+      run: |
+        python scraper.py "${{ matrix.outlet }}" \
+          --year-start 2010 --year-end 2011 \
+          --month-start 1 --month-end 2 \
+          --crawl-delay .1 \
+          --domain-concurrency 4 \
+          --parse-workers 4 \
+          --batch-size 50
+
+    - name: Show results
+      if: always()
+      run: |
+        echo "=== URL queue ==="
+        wc -l *_url_queue.csv 2>/dev/null || echo "No queue file"
+        echo "=== Corpus ==="
+        wc -l *_corpus.csv 2>/dev/null || echo "No corpus file"
+
+    - name: Upload results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-${{ matrix.outlet }}
+        path: |
+          *_url_queue.csv
+          *_corpus.csv
