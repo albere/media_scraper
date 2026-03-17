@@ -63,7 +63,7 @@ jobs:
         SLUG="${{ matrix.outlet }}"
         SLUG="${SLUG,,}"
         SLUG="${SLUG// /_}"
-        BASELINE="checksums/${SLUG}.sha256"
+        BASELINE=".github/workflows/checksums/${SLUG}.sha256"
         if [ ! -s checksums.txt ]; then
           echo "::warning::checksums.txt is missing or empty — skipping regression check"
         elif [ ! -f "$BASELINE" ]; then
