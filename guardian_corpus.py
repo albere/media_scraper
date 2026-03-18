@@ -2,16 +2,12 @@ import os
 import requests
 import csv
 import time
-from datetime import datetime, date
+import argparse
 from calendar import monthrange
 
-API_KEY = os.environ.get("GUARDIAN_API_KEY")
 BASE_URL = "https://content.guardianapis.com/search"
-QUERY = "immigration OR asylum OR migrants OR refugees OR borders"
-OUTPUT_FILE = "guardian_corpus.csv"
-MIN_WORDS = 200
 
-def get_articles_for_month(year, month):
+def get_articles_for_month(year, month, query, min_words, api_key):
     start_date = f"{year}-{month:02d}-01"
     last_day = monthrange(year, month)[1]
     end_date = f"{year}-{month:02d}-{last_day}"
@@ -22,13 +18,13 @@ def get_articles_for_month(year, month):
 
     while page <= total_pages:
         params = {
-            "q": QUERY,
+            "q": query,
             "from-date": start_date,
             "to-date": end_date,
             "show-fields": "bodyText,wordcount",
             "page-size": 200,
             "page": page,
-            "api-key": API_KEY
+            "api-key": api_key
         }
 
         response = requests.get(BASE_URL, params=params)
@@ -45,7 +41,7 @@ def get_articles_for_month(year, month):
             wordcount = int(fields.get("wordcount", 0) or 0)
             body = fields.get("bodyText", "") or ""
 
-            if wordcount >= MIN_WORDS and body:
+            if wordcount >= min_words and body:
                 articles.append({
                     "year": year,
                     "month": month,
@@ -63,15 +59,36 @@ def get_articles_for_month(year, month):
     return articles
 
 def main():
-    with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
+    parser = argparse.ArgumentParser(description="Fetch Guardian articles into a CSV corpus")
+    parser.add_argument("--year-start", type=int, default=2010)
+    parser.add_argument("--year-end", type=int, default=2026,
+                        help="Exclusive end year (e.g. 2026 processes up to and including 2025)")
+    parser.add_argument("--month-start", type=int, default=1)
+    parser.add_argument("--month-end", type=int, default=13,
+                        help="Exclusive end month (e.g. 13 processes all months 1-12)")
+    parser.add_argument(
+        "--keywords",
+        default="immigration,asylum,migrants,refugees,borders",
+        help="Comma-separated keywords used to build the API query (joined with OR)",
+    )
+    parser.add_argument("--min-words", type=int, default=200)
+    parser.add_argument("--output-file", default="guardian_corpus.csv")
+    args = parser.parse_args()
+
+    api_key = os.environ.get("GUARDIAN_API_KEY")
+    if not api_key:
+        raise SystemExit("Error: GUARDIAN_API_KEY environment variable is not set")
+    query = " OR ".join(kw.strip() for kw in args.keywords.split(","))
+
+    with open(args.output_file, "w", newline="", encoding="utf-8") as f:
         fieldnames = ["year", "month", "date", "title", "url", "section", "wordcount", "body"]
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
 
-        for year in range(2010, 2026):
-            for month in range(1, 13):
+        for year in range(args.year_start, args.year_end):
+            for month in range(args.month_start, args.month_end):
                 print(f"Fetching {year}-{month:02d}...")
-                articles = get_articles_for_month(year, month)
+                articles = get_articles_for_month(year, month, query, args.min_words, api_key)
                 writer.writerows(articles)
                 f.flush()  # save progress as we go
                 print(f"  -> {len(articles)} articles saved")
