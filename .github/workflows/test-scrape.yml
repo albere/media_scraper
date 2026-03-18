@@ -38,17 +38,17 @@ jobs:
         GUARDIAN_API_KEY: ${{ secrets.GUARDIAN_API_KEY }}
       run: |
         if [[ "${{ matrix.guardian }}" == "true" ]]; then
-          python guardian_corpus.py \
-            --year-start 2010 --year-end 2011 \
-            --month-start 1 --month-end 2
+            python guardian_corpus.py \
+                --year-start 2010 --year-end 2011 \
+                --month-start 1 --month-end 2
         else
-          python scraper.py "${{ matrix.outlet }}" \
-            --year-start 2010 --year-end 2011 \
-            --month-start 1 --month-end 2 \
-            --crawl-delay .1 \
-            --domain-concurrency 4 \
-            --parse-workers 4 \
-            --batch-size 50
+            python scraper.py "${{ matrix.outlet }}" \
+                --year-start 2010 --year-end 2011 \
+                --month-start 1 --month-end 2 \
+                --crawl-delay .1 \
+                --domain-concurrency 4 \
+                --parse-workers 4 \
+                --batch-size 50
         fi
 
     - name: Show results
