@@ -1,6 +1,7 @@
 import asyncio
 import aiohttp
 import csv
+import logging
 import os
 import time
 import trafilatura
@@ -11,6 +12,8 @@ from functools import cached_property
 from pathlib import Path
 
 import aio.run.runner as runner
+
+_log = logging.getLogger(__name__)
 
 OUTLET_CONFIGS = {
     "Daily Mirror": {
@@ -83,7 +86,8 @@ def _extract_article(html: str):
         metadata = trafilatura.extract_metadata(html)
         date = metadata.date if metadata else None
         return text, date
-    except Exception:
+    except Exception as e:
+        _log.warning(f"trafilatura extraction failed: {type(e).__name__}: {e}")
         return None, None
 
 
@@ -265,8 +269,8 @@ class CorpusScraper(runner.Runner):
                     if r.status != 200:
                         return []
                     body = await r.read()
-            except Exception as e:
-                self.log.warning(f"  [{self.args.outlet}] Sitemap error {sitemap_url}: {e}")
+            except aiohttp.ClientError as e:
+                self.log.warning(f"  [{self.args.outlet}] Sitemap error {sitemap_url}: {type(e).__name__}: {e}")
                 return []
 
         try:
@@ -288,8 +292,8 @@ class CorpusScraper(runner.Runner):
                         "month": month,
                     })
             return found
-        except Exception as e:
-            self.log.warning(f"  [{self.args.outlet}] XML parse error {sitemap_url}: {e}")
+        except ET.ParseError as e:
+            self.log.warning(f"  [{self.args.outlet}] XML parse error {sitemap_url}: {type(e).__name__}: {e}")
             return []
 
     async def _discover_urls_for_month(self, sem, year, month):
@@ -311,28 +315,37 @@ class CorpusScraper(runner.Runner):
                     url, timeout=aiohttp.ClientTimeout(total=30)
                 ) as r:
                     if r.status != 200:
+                        self.log.debug(f"  [{url}] Skipping: HTTP {r.status}")
                         return None
                     html = await r.text()
-            except Exception:
+            except aiohttp.ClientError as e:
+                self.log.warning(f"  [{url}] Fetch error: {type(e).__name__}: {e}")
                 return None
 
         loop = asyncio.get_running_loop()
         text, extracted_date = await loop.run_in_executor(self.pool, _extract_article, html)
 
         if not text:
+            self.log.debug(f"  [{url}] Skipping: no text extracted")
             return None
 
         # Validate date matches target year/month
         date = extracted_date
         if self.config["date_source"] == "trafilatura":
             if not date:
+                self.log.debug(f"  [{url}] Skipping: no date extracted")
                 return None
             try:
                 art_year = int(date[:4])
                 art_month = int(date[5:7])
                 if art_year != int(item["year"]) or art_month != int(item["month"]):
+                    self.log.debug(
+                        f"  [{url}] Skipping: date {date} does not match "
+                        f"target {item['year']}-{int(item['month']):02d}"
+                    )
                     return None
-            except Exception:
+            except (ValueError, IndexError) as e:
+                self.log.warning(f"  [{url}] Skipping: could not parse date {date!r}: {e}")
                 return None
         else:
             date = item["sitemap_date"] or extracted_date
