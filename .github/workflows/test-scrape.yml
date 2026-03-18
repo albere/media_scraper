@@ -17,7 +17,8 @@ jobs:
       matrix:
         outlet:
         - "Daily Express"
-        - "Daily Star"
+	- "The Independent"
+	- "Daily Star"
         include:
         - outlet: "The Guardian"
           guardian: true
