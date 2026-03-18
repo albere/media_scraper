@@ -19,6 +19,9 @@ jobs:
         - "Daily Express"
         - "Daily Star"
         - "The Independent"
+        include:
+        - outlet: "The Guardian"
+          guardian: true
 
     steps:
     - uses: actions/checkout@v4
@@ -31,14 +34,22 @@ jobs:
     - run: pip install -r requirements.txt
 
     - name: Test scrape - ${{ matrix.outlet }}
+      env:
+        GUARDIAN_API_KEY: ${{ secrets.GUARDIAN_API_KEY }}
       run: |
-        python scraper.py "${{ matrix.outlet }}" \
-          --year-start 2010 --year-end 2011 \
-          --month-start 1 --month-end 2 \
-          --crawl-delay .1 \
-          --domain-concurrency 4 \
-          --parse-workers 4 \
-          --batch-size 50
+        if [[ "${{ matrix.guardian }}" == "true" ]]; then
+            python guardian_corpus.py \
+                --year-start 2010 --year-end 2011 \
+                --month-start 1 --month-end 2
+        else
+            python scraper.py "${{ matrix.outlet }}" \
+                --year-start 2010 --year-end 2011 \
+                --month-start 1 --month-end 2 \
+                --crawl-delay .1 \
+                --domain-concurrency 4 \
+                --parse-workers 4 \
+                --batch-size 50
+        fi
 
     - name: Show results
       if: always()
