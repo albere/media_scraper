@@ -17,8 +17,8 @@ jobs:
       matrix:
         outlet:
         - "Daily Express"
-        - "Daily Star"
         - "The Independent"
+        - "Daily Star"
         include:
         - outlet: "The Guardian"
           guardian: true
@@ -45,7 +45,7 @@ jobs:
             python scraper.py "${{ matrix.outlet }}" \
                 --year-start 2010 --year-end 2011 \
                 --month-start 1 --month-end 2 \
-                --crawl-delay .1 \
+                --crawl-delay .0001 \
                 --domain-concurrency 4 \
                 --parse-workers 4 \
                 --batch-size 50
