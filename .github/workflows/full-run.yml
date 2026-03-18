@@ -13,65 +13,65 @@ jobs:
       fail-fast: false
       matrix:
         year:
-          - 2010
-          - 2011
-          - 2012
-          - 2013
-          - 2014
-          - 2015
-          - 2016
-          - 2017
-          - 2018
-          - 2019
-          - 2020
-          - 2021
-          - 2022
-          - 2023
-          - 2024
-          - 2025
+        - 2010
+        - 2011
+        - 2012
+        - 2013
+        - 2014
+        - 2015
+        - 2016
+        - 2017
+        - 2018
+        - 2019
+        - 2020
+        - 2021
+        - 2022
+        - 2023
+        - 2024
+        - 2025
         source:
-          - "Daily Express"
-          - "Daily Star"
-          - "The Independent"
+        - "Daily Express"
+        - "Daily Star"
+        - "The Independent"
 
     steps:
-      - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+        cache: "pip"
 
-      - run: pip install -r requirements.txt
+    - run: pip install -r requirements.txt
 
-      - name: Scrape ${{ matrix.source }} - ${{ matrix.year }}
-        run: |
-            python scraper.py "${{ matrix.source }}" \
-              --year-start ${{ matrix.year }} --year-end ${{ matrix.year }} \
-              --month-start 1 --month-end 12 \
-              --crawl-delay .1 \
-              --domain-concurrency 4 \
-              --parse-workers 4 \
-              --batch-size 50
+    - name: Scrape ${{ matrix.source }} - ${{ matrix.year }}
+      run: |
+          python scraper.py "${{ matrix.source }}" \
+            --year-start ${{ matrix.year }} --year-end ${{ matrix.year }} \
+            --month-start 1 --month-end 12 \
+            --crawl-delay .1 \
+            --domain-concurrency 4 \
+            --parse-workers 4 \
+            --batch-size 50
 
-      - name: Rename output for upload
-        id: rename
-        run: |
-            SLUG="${{ matrix.source }}"
-            SLUG="${SLUG,,}"
-            SLUG="${SLUG// /_}"
-            if [ -f "${SLUG}_corpus.csv" ]; then
-              mv "${SLUG}_corpus.csv" "corpus_${{ matrix.year }}_${SLUG}.csv"
-            else
-              echo "::warning::Expected corpus file ${SLUG}_corpus.csv not found — no output produced"
-            fi
-            echo "slug=${SLUG}" >> "$GITHUB_OUTPUT"
+    - name: Rename output for upload
+      id: rename
+      run: |
+          SLUG="${{ matrix.source }}"
+          SLUG="${SLUG,,}"
+          SLUG="${SLUG// /_}"
+          if [ -f "${SLUG}_corpus.csv" ]; then
+            mv "${SLUG}_corpus.csv" "corpus_${{ matrix.year }}_${SLUG}.csv"
+          else
+            echo "::warning::Expected corpus file ${SLUG}_corpus.csv not found — no output produced"
+          fi
+          echo "slug=${SLUG}" >> "$GITHUB_OUTPUT"
 
-      - name: Upload corpus artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: corpus-${{ matrix.year }}-${{ steps.rename.outputs.slug }}
-          path: corpus_${{ matrix.year }}_*.csv
+    - name: Upload corpus artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: corpus-${{ matrix.year }}-${{ steps.rename.outputs.slug }}
+        path: corpus_${{ matrix.year }}_*.csv
 
   aggregate:
     needs: scrape
@@ -80,21 +80,21 @@ jobs:
       contents: read
 
     steps:
-      - name: Download all corpus artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts/
-          pattern: corpus-*
-          merge-multiple: true
+    - name: Download all corpus artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts/
+        pattern: corpus-*
+        merge-multiple: true
 
-      - name: Show collected files
-        run: |
-            echo "=== Collected corpus files ==="
-            ls -la artifacts/
-            wc -l artifacts/*.csv 2>/dev/null || echo "No files produced"
+    - name: Show collected files
+      run: |
+          echo "=== Collected corpus files ==="
+          ls -la artifacts/
+          wc -l artifacts/*.csv 2>/dev/null || echo "No files produced"
 
-      - name: Upload full corpus
-        uses: actions/upload-artifact@v4
-        with:
-          name: full-corpus
-          path: artifacts/
+    - name: Upload full corpus
+      uses: actions/upload-artifact@v4
+      with:
+        name: full-corpus
+        path: artifacts/
