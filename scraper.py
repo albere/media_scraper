@@ -260,8 +260,8 @@ class CorpusScraper(runner.Runner):
     # ── Phase 1: URL Discovery ───────────────────────────────────────────
 
     async def _fetch_sitemap(self, sem, sitemap_url, year, month):
-        await self.rate_limiter.acquire()
         async with sem:
+            await self.rate_limiter.acquire()
             try:
                 async with self.session.get(
                     sitemap_url, timeout=aiohttp.ClientTimeout(total=30)
@@ -308,8 +308,8 @@ class CorpusScraper(runner.Runner):
     async def _fetch_and_extract(self, domain_sem, global_sem, item):
         url = item["url"]
 
-        await self.rate_limiter.acquire()
         async with global_sem, domain_sem:
+            await self.rate_limiter.acquire()
             try:
                 async with self.session.get(
                     url, timeout=aiohttp.ClientTimeout(total=30)
