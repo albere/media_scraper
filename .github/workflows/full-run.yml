@@ -46,26 +46,26 @@ jobs:
 
       - name: Scrape ${{ matrix.source }} - ${{ matrix.year }}
         run: |
-          python scraper.py "${{ matrix.source }}" \
-            --year-start ${{ matrix.year }} --year-end ${{ matrix.year }} \
-            --month-start 1 --month-end 12 \
-            --crawl-delay .1 \
-            --domain-concurrency 4 \
-            --parse-workers 4 \
-            --batch-size 50
+            python scraper.py "${{ matrix.source }}" \
+              --year-start ${{ matrix.year }} --year-end ${{ matrix.year }} \
+              --month-start 1 --month-end 12 \
+              --crawl-delay .1 \
+              --domain-concurrency 4 \
+              --parse-workers 4 \
+              --batch-size 50
 
       - name: Rename output for upload
         id: rename
         run: |
-          SLUG="${{ matrix.source }}"
-          SLUG="${SLUG,,}"
-          SLUG="${SLUG// /_}"
-          if [ -f "${SLUG}_corpus.csv" ]; then
-            mv "${SLUG}_corpus.csv" "corpus_${{ matrix.year }}_${SLUG}.csv"
-          else
-            echo "::warning::Expected corpus file ${SLUG}_corpus.csv not found — no output produced"
-          fi
-          echo "slug=${SLUG}" >> "$GITHUB_OUTPUT"
+            SLUG="${{ matrix.source }}"
+            SLUG="${SLUG,,}"
+            SLUG="${SLUG// /_}"
+            if [ -f "${SLUG}_corpus.csv" ]; then
+              mv "${SLUG}_corpus.csv" "corpus_${{ matrix.year }}_${SLUG}.csv"
+            else
+              echo "::warning::Expected corpus file ${SLUG}_corpus.csv not found — no output produced"
+            fi
+            echo "slug=${SLUG}" >> "$GITHUB_OUTPUT"
 
       - name: Upload corpus artifact
         uses: actions/upload-artifact@v4
@@ -89,9 +89,9 @@ jobs:
 
       - name: Show collected files
         run: |
-          echo "=== Collected corpus files ==="
-          ls -la artifacts/
-          wc -l artifacts/*.csv 2>/dev/null || echo "No files produced"
+            echo "=== Collected corpus files ==="
+            ls -la artifacts/
+            wc -l artifacts/*.csv 2>/dev/null || echo "No files produced"
 
       - name: Upload full corpus
         uses: actions/upload-artifact@v4
