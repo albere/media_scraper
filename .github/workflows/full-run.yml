@@ -85,30 +85,16 @@ jobs:
         with:
           path: artifacts/
           pattern: corpus-*
-          merge-multiple: false
+          merge-multiple: true
 
-      - name: Aggregate by year
+      - name: Show collected files
         run: |
-          mkdir -p aggregated
-          for year in $(seq 2010 2025); do
-            header_written=false
-            for f in artifacts/corpus-${year}-*/corpus_${year}_*.csv; do
-              if [ -f "$f" ]; then
-                if [ "$header_written" = "false" ]; then
-                  cat "$f" > "aggregated/corpus_${year}.csv"
-                  header_written=true
-                else
-                  tail -n +2 "$f" >> "aggregated/corpus_${year}.csv"
-                fi
-              fi
-            done
-          done
-          echo "=== Aggregated files ==="
-          ls -la aggregated/
-          wc -l aggregated/*.csv 2>/dev/null || echo "No files produced"
+          echo "=== Collected corpus files ==="
+          ls -la artifacts/
+          wc -l artifacts/*.csv 2>/dev/null || echo "No files produced"
 
       - name: Upload full corpus
         uses: actions/upload-artifact@v4
         with:
           name: full-corpus
-          path: aggregated/
+          path: artifacts/
