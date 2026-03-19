@@ -67,10 +67,10 @@ def _extract_article(html: str) -> tuple[str | None, str | None]:
 
 class CorpusScraper(runner.Runner):
 
-    _CONFIG_OVERRIDE = os.environ.get("OUTLET_CONFIG_PATH")
+    _CONFIG_PATH_OVERRIDE = os.environ.get("OUTLET_CONFIG_PATH")
     _CONFIG_PATH = (
-        Path(_CONFIG_OVERRIDE)
-        if _CONFIG_OVERRIDE
+        Path(_CONFIG_PATH_OVERRIDE)
+        if _CONFIG_PATH_OVERRIDE
         else Path(__file__).with_name("outlet_configs.yaml")
     )
     _OUTLET_CONFIGS: dict[str, dict[str, Any]] | None = None
@@ -78,7 +78,14 @@ class CorpusScraper(runner.Runner):
     @classmethod
     def _load_outlet_configs(cls) -> dict[str, dict[str, Any]]:
         if not cls._CONFIG_PATH.exists():
-            raise FileNotFoundError(f"Outlet config file not found: {cls._CONFIG_PATH}")
+            location = (
+                "set via OUTLET_CONFIG_PATH"
+                if cls._CONFIG_PATH_OVERRIDE
+                else "default location"
+            )
+            raise FileNotFoundError(
+                f"Outlet config file not found at {cls._CONFIG_PATH} ({location})"
+            )
 
         with cls._CONFIG_PATH.open("r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
@@ -322,7 +329,7 @@ class CorpusScraper(runner.Runner):
         if "sitemap_templates" not in self.config:
             raise KeyError(f"No sitemap_templates configured for {self.args.outlet}")
 
-        templates = self.config.get("sitemap_templates")
+        templates = self.config["sitemap_templates"]
         if not templates:
             raise ValueError(f"sitemap_templates for {self.args.outlet} is empty")
 
