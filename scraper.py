@@ -67,8 +67,19 @@ def _extract_article(html: str) -> tuple[str | None, str | None]:
 
 class CorpusScraper(runner.Runner):
 
-    @staticmethod
-    def _load_outlet_configs(path: Path) -> dict[str, dict[str, Any]]:
+    @cached_property
+    def outlet_config_path(self) -> Path:
+        if self.args.outlet_config_path:
+            return Path(self.args.outlet_config_path)
+        try:
+            base = Path(__file__).resolve().parent
+        except NameError:
+            base = Path.cwd()  # __file__ may be missing in interactive contexts
+        return base / "outlet_configs.yaml"
+
+    @cached_property
+    def outlet_configs(self) -> dict[str, dict[str, Any]]:
+        path = self.outlet_config_path
         if not path.exists():
             raise FileNotFoundError(
                 f"Outlet config file not found at {path} "
@@ -86,20 +97,6 @@ class CorpusScraper(runner.Runner):
             )
 
         return data
-
-    @cached_property
-    def outlet_config_path(self) -> Path:
-        if self.args.outlet_config_path:
-            return Path(self.args.outlet_config_path)
-        try:
-            base = Path(__file__).resolve().parent
-        except NameError:
-            base = Path.cwd()  # __file__ may be missing in interactive contexts
-        return base / "outlet_configs.yaml"
-
-    @cached_property
-    def outlet_configs(self) -> dict[str, dict[str, Any]]:
-        return self._load_outlet_configs(self.outlet_config_path)
 
     @cached_property
     def config(self) -> dict[str, Any]:
