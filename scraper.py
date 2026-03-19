@@ -23,9 +23,10 @@ import aio.run.runner as runner
 _log = logging.getLogger(__name__)
 
 _DAY_PLACEHOLDER_PATTERN = re.compile(r"{\s*day(?::[^}]*)?}")
+_CONFIG_OVERRIDE = os.environ.get("OUTLET_CONFIG_PATH")
 _CONFIG_PATH = (
-    Path(os.environ["OUTLET_CONFIG_PATH"])
-    if os.environ.get("OUTLET_CONFIG_PATH")
+    Path(_CONFIG_OVERRIDE)
+    if _CONFIG_OVERRIDE
     else Path(__file__).with_name("outlet_configs.yaml")
 )
 
