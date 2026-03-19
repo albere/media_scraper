@@ -421,19 +421,16 @@ class CorpusScraper(runner.Runner):
                     url, timeout=aiohttp.ClientTimeout(total=30)
                 ) as r:
                     if r.status != 200:
-                        self.log.debug(f"  [{url}] Skipping: HTTP {r.status}")
-                        return None
+                        raise RuntimeError(f"[{url}] HTTP {r.status}")
                     html = await r.text()
             except aiohttp.ClientError as e:
-                self.log.warning(f"  [{url}] Fetch error: {type(e).__name__}: {e}")
-                return None
+                raise RuntimeError(f"[{url}] Fetch error: {type(e).__name__}: {e}") from e
 
         loop = asyncio.get_running_loop()
         text, extracted_date = await loop.run_in_executor(self.pool, _extract_article, html)
 
         if not text:
-            self.log.debug(f"  [{url}] Skipping: no text extracted")
-            return None
+            raise RuntimeError(f"[{url}] Parse failed: no text extracted")
 
         # Validate date matches target year/month
         date = extracted_date
@@ -519,11 +516,17 @@ class CorpusScraper(runner.Runner):
                 ]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
 
+                batch_errors = [r for r in results if isinstance(r, Exception)]
+                if batch_errors:
+                    first_error = batch_errors[0]
+                    raise RuntimeError(
+                        f"Extraction failed: {type(first_error).__name__}: {first_error}"
+                    ) from (
+                        first_error if isinstance(first_error, Exception) else None
+                    )
+
                 for result in results:
-                    if isinstance(result, Exception):
-                        errors += 1
-                        self.log.error(f"  [error] {type(result).__name__}: {result}")
-                    elif isinstance(result, dict):
+                    if isinstance(result, dict):
                         writer.writerow(result)
                         saved += 1
 
@@ -552,11 +555,12 @@ class CorpusScraper(runner.Runner):
                     sitemap_url, timeout=aiohttp.ClientTimeout(total=30)
                 ) as r:
                     if r.status != 200:
-                        return []
+                        raise RuntimeError(f"[{self.args.outlet}] Sitemap HTTP {r.status}: {sitemap_url}")
                     body = await r.read()
             except aiohttp.ClientError as e:
-                self.log.warning(f"  [{self.args.outlet}] Sitemap error {sitemap_url}: {type(e).__name__}: {e}")
-                return []
+                raise RuntimeError(
+                    f"[{self.args.outlet}] Sitemap fetch error {sitemap_url}: {type(e).__name__}: {e}"
+                ) from e
 
         try:
             root = ET.fromstring(body)
@@ -578,8 +582,9 @@ class CorpusScraper(runner.Runner):
                     })
             return found
         except ET.ParseError as e:
-            self.log.warning(f"  [{self.args.outlet}] XML parse error {sitemap_url}: {type(e).__name__}: {e}")
-            return []
+            raise RuntimeError(
+                f"[{self.args.outlet}] XML parse error {sitemap_url}: {type(e).__name__}: {e}"
+            ) from e
 
     def _load_queue(self) -> list[dict[str, str]]:
         with self.url_queue_path.open(newline="", encoding="utf-8") as f:
