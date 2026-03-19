@@ -1,15 +1,17 @@
-import asyncio
 import aiohttp
+import asyncio
 import csv
 import logging
 import os
+import sys
 import time
-import trafilatura
-import xml.etree.ElementTree as ET
 from calendar import monthrange
 from concurrent.futures import ProcessPoolExecutor
 from functools import cached_property
 from pathlib import Path
+import xml.etree.ElementTree as ET
+
+import trafilatura
 
 import aio.run.runner as runner
 
@@ -91,47 +93,7 @@ def _extract_article(html: str):
         return None, None
 
 
-# ── Runner ───────────────────────────────────────────────────────────────
-
 class CorpusScraper(runner.Runner):
-
-    def add_arguments(self, parser):
-        super().add_arguments(parser)
-        parser.add_argument(
-            "outlet",
-            choices=list(OUTLET_CONFIGS.keys()),
-            help="News outlet to scrape",
-        )
-        parser.add_argument("--year-start", type=int, default=2010)
-        parser.add_argument("--year-end", type=int, default=2022,
-                            help="Exclusive end year (e.g. 2022 processes up to and including 2021)")
-        parser.add_argument("--month-start", type=int, default=1)
-        parser.add_argument("--month-end", type=int, default=13,
-                            help="Exclusive end month (e.g. 13 processes all months 1-12)")
-        parser.add_argument("--crawl-delay", type=float, default=None,
-                            help="Seconds between requests (default: per-outlet)")
-        parser.add_argument("--domain-concurrency", type=int, default=5)
-        parser.add_argument("--global-concurrency", type=int, default=10)
-        parser.add_argument("--parse-workers", type=int, default=None)
-        parser.add_argument("--batch-size", type=int, default=200)
-        parser.add_argument("--min-words", type=int, default=200)
-        parser.add_argument(
-            "--keywords",
-            default="immigration,asylum,migrants,refugees,borders,migration",
-            help="Comma-separated keywords to filter articles",
-        )
-        parser.add_argument("--output-file", default=None)
-        parser.add_argument("--url-queue-file", default=None)
-        parser.add_argument("--user-agent", default=_DEFAULT_USER_AGENT)
-        parser.add_argument(
-            "--s3-bucket",
-            default=None,
-            help="S3 bucket for caching completed months (overrides S3_BUCKET env var)",
-        )
-
-    @cached_property
-    def _slug(self):
-        return self.args.outlet.lower().replace(" ", "_")
 
     @cached_property
     def config(self):
@@ -168,6 +130,40 @@ class CorpusScraper(runner.Runner):
     @cached_property
     def pool(self):
         return ProcessPoolExecutor(max_workers=self.args.parse_workers or os.cpu_count())
+
+    def add_arguments(self, parser):
+        super().add_arguments(parser)
+        parser.add_argument(
+            "outlet",
+            choices=list(OUTLET_CONFIGS.keys()),
+            help="News outlet to scrape",
+        )
+        parser.add_argument("--year-start", type=int, default=2010)
+        parser.add_argument("--year-end", type=int, default=2022,
+                            help="Exclusive end year (e.g. 2022 processes up to and including 2021)")
+        parser.add_argument("--month-start", type=int, default=1)
+        parser.add_argument("--month-end", type=int, default=13,
+                            help="Exclusive end month (e.g. 13 processes all months 1-12)")
+        parser.add_argument("--crawl-delay", type=float, default=None,
+                            help="Seconds between requests (default: per-outlet)")
+        parser.add_argument("--domain-concurrency", type=int, default=5)
+        parser.add_argument("--global-concurrency", type=int, default=10)
+        parser.add_argument("--parse-workers", type=int, default=None)
+        parser.add_argument("--batch-size", type=int, default=200)
+        parser.add_argument("--min-words", type=int, default=200)
+        parser.add_argument(
+            "--keywords",
+            default="immigration,asylum,migrants,refugees,borders,migration",
+            help="Comma-separated keywords to filter articles",
+        )
+        parser.add_argument("--output-file", default=None)
+        parser.add_argument("--url-queue-file", default=None)
+        parser.add_argument("--user-agent", default=_DEFAULT_USER_AGENT)
+        parser.add_argument(
+            "--s3-bucket",
+            default=None,
+            help="S3 bucket for caching completed months (overrides S3_BUCKET env var)",
+        )
 
     async def cleanup(self):
         await super().cleanup()
@@ -266,44 +262,93 @@ class CorpusScraper(runner.Runner):
         elapsed = time.monotonic() - t0
         self.log.success(f"✓ Done. {saved} articles saved in {elapsed / 60:.1f} minutes")
 
-    # ── Phase 1: URL Discovery ───────────────────────────────────────────
+    @runner.cleansup
+    @runner.catches((aiohttp.ClientError, KeyboardInterrupt))
+    async def run(self) -> int | None:
+        from s3_cache import S3Cache
 
-    async def _fetch_sitemap(self, sem, sitemap_url, year, month):
-        async with sem:
-            await self.rate_limiter.acquire()
-            try:
-                async with self.session.get(
-                    sitemap_url, timeout=aiohttp.ClientTimeout(total=30)
-                ) as r:
-                    if r.status != 200:
-                        return []
-                    body = await r.read()
-            except aiohttp.ClientError as e:
-                self.log.warning(f"  [{self.args.outlet}] Sitemap error {sitemap_url}: {type(e).__name__}: {e}")
-                return []
+        self.log.info(f"=== Scraping {self.args.outlet} ===")
+        self.log.info(f"    Years:  {self.args.year_start}–{self.args.year_end - 1}")
+        self.log.info(f"    Months: {self.args.month_start}–{self.args.month_end - 1} (inclusive)")
+        self.log.info(f"    Crawl delay: {self.crawl_delay}s")
+        self.log.info(f"    Domain concurrency: {self.args.domain_concurrency}")
+        self.log.info(f"    Parse workers: {self.args.parse_workers or os.cpu_count()}")
 
-        try:
-            root = ET.fromstring(body)
-            ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-            found = []
-            for url_elem in root.findall("sm:url", ns):
-                loc = url_elem.find("sm:loc", ns)
-                lastmod = url_elem.find("sm:lastmod", ns)
-                if loc is not None:
-                    date_str = (
-                        lastmod.text.strip()[:10] if lastmod is not None else None
-                    )
-                    found.append({
-                        "outlet": self.args.outlet,
-                        "url": loc.text.strip(),
-                        "sitemap_date": date_str,
-                        "year": year,
-                        "month": month,
-                    })
-            return found
-        except ET.ParseError as e:
-            self.log.warning(f"  [{self.args.outlet}] XML parse error {sitemap_url}: {type(e).__name__}: {e}")
-            return []
+        async with S3Cache(self.args.s3_bucket) as cache:
+            for year in range(self.args.year_start, self.args.year_end):
+                for month in range(self.args.month_start, self.args.month_end):
+                    if await cache.exists(self.args.outlet, year, month):
+                        self.log.info(
+                            f"  Skipping {year}-{month:02d} (S3 cache hit)"
+                        )
+                        continue
+
+                    queue_file = self._month_queue_file(year, month)
+                    output_file = self._month_output_file(year, month)
+
+                    try:
+                        await self._discover_month(year, month, queue_file)
+                        await self._extract_month(year, month, queue_file, output_file)
+
+                        if output_file.exists() and output_file.stat().st_size > 0:
+                            await cache.upload(
+                                output_file, self.args.outlet, year, month
+                            )
+                            self.log.success(
+                                f"  ✓ {year}-{month:02d} complete and uploaded to S3"
+                            )
+                        else:
+                            self.log.warning(
+                                f"  ⚠ {year}-{month:02d}: no output produced — "
+                                "not uploading to S3"
+                            )
+                    except Exception as exc:
+                        self.log.error(
+                            f"  ✗ {year}-{month:02d} failed: "
+                            f"{type(exc).__name__}: {exc} — "
+                            "will retry on next run"
+                        )
+
+    @cached_property
+    def _slug(self):
+        return self.args.outlet.lower().replace(" ", "_")
+
+    def _already_done(self):
+        if not Path(self.output_file).exists():
+            return set()
+        with open(self.output_file, newline="", encoding="utf-8") as f:
+            return {row["url"] for row in csv.DictReader(f)}
+
+    async def _discover_month(self, year: int, month: int, queue_file: Path) -> int:
+        """Discover URLs for a single (year, month) and write them to *queue_file*.
+
+        Returns the number of (deduplicated) URLs found.  If *queue_file*
+        already exists the step is skipped and the existing row count returned.
+        """
+        if queue_file.exists():
+            self.log.info(f"  ✓ {queue_file} already exists — skipping discovery")
+            with open(queue_file, newline="", encoding="utf-8") as f:
+                return sum(1 for _ in csv.DictReader(f))
+
+        sem = asyncio.Semaphore(self.args.global_concurrency)
+        urls = await self._discover_urls_for_month(sem, year, month)
+
+        seen: set[str] = set()
+        deduped = []
+        for item in urls:
+            if item["url"] not in seen:
+                seen.add(item["url"])
+                deduped.append(item)
+
+        with open(queue_file, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f, fieldnames=["outlet", "url", "sitemap_date", "year", "month"]
+            )
+            writer.writeheader()
+            writer.writerows(deduped)
+
+        self.log.info(f"  Discovered {len(deduped)} URLs for {year}-{month:02d}")
+        return len(deduped)
 
     async def _discover_urls_for_month(self, sem, year, month):
         sitemap_urls = self.config["sitemap_urls"](year, month)
@@ -311,8 +356,6 @@ class CorpusScraper(runner.Runner):
             *[self._fetch_sitemap(sem, u, year, month) for u in sitemap_urls]
         )
         return [item for sublist in all_results for item in sublist]
-
-    # ── Phase 2: Fetch + Extract ─────────────────────────────────────────
 
     async def _fetch_and_extract(self, domain_sem, global_sem, item):
         url = item["url"]
@@ -374,55 +417,6 @@ class CorpusScraper(runner.Runner):
             "wordcount": wordcount,
             "body": text,
         }
-
-    def _load_queue(self):
-        with open(self.url_queue_file, newline="", encoding="utf-8") as f:
-            return list(csv.DictReader(f))
-
-    def _already_done(self):
-        if not Path(self.output_file).exists():
-            return set()
-        with open(self.output_file, newline="", encoding="utf-8") as f:
-            return {row["url"] for row in csv.DictReader(f)}
-
-    # ── Per-month helpers ────────────────────────────────────────────────
-
-    def _month_queue_file(self, year: int, month: int) -> Path:
-        return Path(f"{self._slug}_{year}_{month:02d}_url_queue.csv")
-
-    def _month_output_file(self, year: int, month: int) -> Path:
-        return Path(f"{self._slug}_{year}_{month:02d}_corpus.csv")
-
-    async def _discover_month(self, year: int, month: int, queue_file: Path) -> int:
-        """Discover URLs for a single (year, month) and write them to *queue_file*.
-
-        Returns the number of (deduplicated) URLs found.  If *queue_file*
-        already exists the step is skipped and the existing row count returned.
-        """
-        if queue_file.exists():
-            self.log.info(f"  ✓ {queue_file} already exists — skipping discovery")
-            with open(queue_file, newline="", encoding="utf-8") as f:
-                return sum(1 for _ in csv.DictReader(f))
-
-        sem = asyncio.Semaphore(self.args.global_concurrency)
-        urls = await self._discover_urls_for_month(sem, year, month)
-
-        seen: set[str] = set()
-        deduped = []
-        for item in urls:
-            if item["url"] not in seen:
-                seen.add(item["url"])
-                deduped.append(item)
-
-        with open(queue_file, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(
-                f, fieldnames=["outlet", "url", "sitemap_date", "year", "month"]
-            )
-            writer.writeheader()
-            writer.writerows(deduped)
-
-        self.log.info(f"  Discovered {len(deduped)} URLs for {year}-{month:02d}")
-        return len(deduped)
 
     async def _extract_month(
         self, year: int, month: int, queue_file: Path, output_file: Path
@@ -494,58 +488,55 @@ class CorpusScraper(runner.Runner):
         )
         return saved
 
-    @runner.cleansup
-    @runner.catches((aiohttp.ClientError, KeyboardInterrupt))
-    async def run(self) -> int | None:
-        from s3_cache import S3Cache
+    async def _fetch_sitemap(self, sem, sitemap_url, year, month):
+        async with sem:
+            await self.rate_limiter.acquire()
+            try:
+                async with self.session.get(
+                    sitemap_url, timeout=aiohttp.ClientTimeout(total=30)
+                ) as r:
+                    if r.status != 200:
+                        return []
+                    body = await r.read()
+            except aiohttp.ClientError as e:
+                self.log.warning(f"  [{self.args.outlet}] Sitemap error {sitemap_url}: {type(e).__name__}: {e}")
+                return []
 
-        self.log.info(f"=== Scraping {self.args.outlet} ===")
-        self.log.info(f"    Years:  {self.args.year_start}–{self.args.year_end - 1}")
-        self.log.info(f"    Months: {self.args.month_start}–{self.args.month_end - 1} (inclusive)")
-        self.log.info(f"    Crawl delay: {self.crawl_delay}s")
-        self.log.info(f"    Domain concurrency: {self.args.domain_concurrency}")
-        self.log.info(f"    Parse workers: {self.args.parse_workers or os.cpu_count()}")
+        try:
+            root = ET.fromstring(body)
+            ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+            found = []
+            for url_elem in root.findall("sm:url", ns):
+                loc = url_elem.find("sm:loc", ns)
+                lastmod = url_elem.find("sm:lastmod", ns)
+                if loc is not None:
+                    date_str = (
+                        lastmod.text.strip()[:10] if lastmod is not None else None
+                    )
+                    found.append({
+                        "outlet": self.args.outlet,
+                        "url": loc.text.strip(),
+                        "sitemap_date": date_str,
+                        "year": year,
+                        "month": month,
+                    })
+            return found
+        except ET.ParseError as e:
+            self.log.warning(f"  [{self.args.outlet}] XML parse error {sitemap_url}: {type(e).__name__}: {e}")
+            return []
 
-        async with S3Cache(self.args.s3_bucket) as cache:
-            for year in range(self.args.year_start, self.args.year_end):
-                for month in range(self.args.month_start, self.args.month_end):
-                    if await cache.exists(self.args.outlet, year, month):
-                        self.log.info(
-                            f"  Skipping {year}-{month:02d} (S3 cache hit)"
-                        )
-                        continue
+    def _load_queue(self):
+        with open(self.url_queue_file, newline="", encoding="utf-8") as f:
+            return list(csv.DictReader(f))
 
-                    queue_file = self._month_queue_file(year, month)
-                    output_file = self._month_output_file(year, month)
+    def _month_output_file(self, year: int, month: int) -> Path:
+        return Path(f"{self._slug}_{year}_{month:02d}_corpus.csv")
 
-                    try:
-                        await self._discover_month(year, month, queue_file)
-                        await self._extract_month(year, month, queue_file, output_file)
+    def _month_queue_file(self, year: int, month: int) -> Path:
+        return Path(f"{self._slug}_{year}_{month:02d}_url_queue.csv")
 
-                        if output_file.exists() and output_file.stat().st_size > 0:
-                            await cache.upload(
-                                output_file, self.args.outlet, year, month
-                            )
-                            self.log.success(
-                                f"  ✓ {year}-{month:02d} complete and uploaded to S3"
-                            )
-                        else:
-                            self.log.warning(
-                                f"  ⚠ {year}-{month:02d}: no output produced — "
-                                "not uploading to S3"
-                            )
-                    except Exception as exc:
-                        self.log.error(
-                            f"  ✗ {year}-{month:02d} failed: "
-                            f"{type(exc).__name__}: {exc} — "
-                            "will retry on next run"
-                        )
-
-
-# ── Entry point ──────────────────────────────────────────────────────────
 
 def main():
-    import sys
     return CorpusScraper(*sys.argv[1:])()
 
 
