@@ -522,10 +522,9 @@ class CorpusScraper(runner.Runner):
                         f"Extraction failed: {type(first_error).__name__}: {first_error}"
                     ) from first_error
 
-                for result in results:
-                    if isinstance(result, dict):
-                        writer.writerow(result)
-                        saved += 1
+                for result in (r for r in results if isinstance(r, dict)):
+                    writer.writerow(result)
+                    saved += 1
 
                 f.flush()
                 elapsed = time.monotonic() - t0
