@@ -22,7 +22,7 @@ import aio.run.runner as runner
 
 _log = logging.getLogger(__name__)
 
-_DAY_PLACEHOLDER_PATTERN = re.compile(r"{day(?::[^}]*)?}")
+DAY_PLACEHOLDER_PATTERN = re.compile(r"{day(?::[^}]*)?}")
 
 
 _DEFAULT_USER_AGENT = (
@@ -346,7 +346,7 @@ class CorpusScraper(runner.Runner):
                 )
 
             try:
-                if _DAY_PLACEHOLDER_PATTERN.search(template):
+                if DAY_PLACEHOLDER_PATTERN.search(template):
                     urls.extend(
                         template.format(year=year, month=month, day=day)
                         for day in range(1, last_day + 1)
