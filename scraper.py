@@ -519,11 +519,12 @@ class CorpusScraper(runner.Runner):
                 if batch_errors:
                     first_error = batch_errors[0]
                     failed_index = results.index(first_error)
-                    failed_item = batch[failed_index] if failed_index < len(batch) else None
-                    if isinstance(failed_item, dict):
-                        failed_url = failed_item.get("url", "unknown URL")
-                    else:
-                        failed_url = "unknown URL"
+                    failed_item = batch[failed_index]
+                    failed_url = (
+                        failed_item.get("url", "unknown URL")
+                        if isinstance(failed_item, dict)
+                        else "unknown URL"
+                    )
                     raise RuntimeError(
                         f"Extraction failed for {failed_url}: "
                         f"{type(first_error).__name__}: {first_error}"
