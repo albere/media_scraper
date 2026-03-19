@@ -9,6 +9,7 @@ from calendar import monthrange
 from concurrent.futures import ProcessPoolExecutor
 from functools import cached_property
 from pathlib import Path
+import re
 from typing import Any, Sequence
 import argparse
 import xml.etree.ElementTree as ET
@@ -21,7 +22,12 @@ import aio.run.runner as runner
 
 _log = logging.getLogger(__name__)
 
-_CONFIG_PATH = Path(__file__).with_name("outlet_configs.yaml")
+_DAY_PLACEHOLDER_PATTERN = re.compile(r"{\s*day(?::[^}]*)?}")
+_CONFIG_PATH = (
+    Path(os.environ["OUTLET_CONFIG_PATH"])
+    if os.environ.get("OUTLET_CONFIG_PATH")
+    else Path(__file__).with_name("outlet_configs.yaml")
+)
 
 
 def _load_outlet_configs() -> dict[str, dict[str, Any]]:
@@ -316,7 +322,7 @@ class CorpusScraper(runner.Runner):
                     f"got {type(template).__name__}"
                 )
 
-            if "{day" in template:
+            if _DAY_PLACEHOLDER_PATTERN.search(template):
                 urls.extend(
                     template.format(year=year, month=month, day=day)
                     for day in range(1, last_day + 1)
