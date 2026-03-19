@@ -4,7 +4,7 @@ import os
 import time
 from calendar import monthrange
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 import requests
 
@@ -13,12 +13,12 @@ BASE_URL = "https://content.guardianapis.com/search"
 
 def get_articles_for_month(
     year: int, month: int, query: str, min_words: int, api_key: str
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     start_date = f"{year}-{month:02d}-01"
     last_day = monthrange(year, month)[1]
     end_date = f"{year}-{month:02d}-{last_day}"
 
-    articles: List[Dict[str, Any]] = []
+    articles: list[dict[str, Any]] = []
     page = 1
     total_pages = 1
 
