@@ -9,6 +9,8 @@ from calendar import monthrange
 from concurrent.futures import ProcessPoolExecutor
 from functools import cached_property
 from pathlib import Path
+from typing import Any, Sequence
+import argparse
 import xml.etree.ElementTree as ET
 
 import trafilatura
@@ -17,7 +19,7 @@ import aio.run.runner as runner
 
 _log = logging.getLogger(__name__)
 
-OUTLET_CONFIGS = {
+OUTLET_CONFIGS: dict[str, dict[str, Any]] = {
     "Daily Mirror": {
         "domain": "mirror.co.uk",
         "sitemap_urls": lambda year, month: [
@@ -61,12 +63,12 @@ _DEFAULT_USER_AGENT = (
 # ── Rate limiter ─────────────────────────────────────────────────────────
 
 class RateLimiter:
-    def __init__(self, delay: float):
+    def __init__(self, delay: float) -> None:
         self.delay = delay
         self.lock = asyncio.Lock()
         self.last_request = 0.0
 
-    async def acquire(self):
+    async def acquire(self) -> None:
         async with self.lock:
             now = asyncio.get_event_loop().time()
             wait = self.delay - (now - self.last_request)
@@ -77,11 +79,11 @@ class RateLimiter:
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
-def contains_keyword(text: str, keywords: list) -> bool:
+def contains_keyword(text: str, keywords: Sequence[str]) -> bool:
     return any(kw in text.lower() for kw in keywords)
 
 
-def _extract_article(html: str):
+def _extract_article(html: str) -> tuple[str | None, str | None]:
     """CPU-bound — runs in process pool."""
     try:
         text = trafilatura.extract(html, include_comments=False, include_tables=False)
@@ -96,38 +98,38 @@ def _extract_article(html: str):
 class CorpusScraper(runner.Runner):
 
     @cached_property
-    def config(self):
+    def config(self) -> dict[str, Any]:
         return OUTLET_CONFIGS[self.args.outlet]
 
     @cached_property
-    def crawl_delay(self):
+    def crawl_delay(self) -> float:
         return self.args.crawl_delay or self.config["crawl_delay"]
 
     @cached_property
-    def keywords(self):
+    def keywords(self) -> list[str]:
         return [kw.strip() for kw in self.args.keywords.split(",")]
 
     @cached_property
-    def output_path(self):
+    def output_path(self) -> Path:
         return Path(self.args.output_file or f"{self._slug}_corpus.csv")
 
     @cached_property
-    def url_queue_path(self):
+    def url_queue_path(self) -> Path:
         return Path(self.args.url_queue_file or f"{self._slug}_url_queue.csv")
 
     @cached_property
-    def rate_limiter(self):
+    def rate_limiter(self) -> RateLimiter:
         return RateLimiter(self.crawl_delay)
 
     @cached_property
-    def session(self):
+    def session(self) -> aiohttp.ClientSession:
         return aiohttp.ClientSession(headers={"User-Agent": self.args.user_agent})
 
     @cached_property
-    def pool(self):
+    def pool(self) -> ProcessPoolExecutor:
         return ProcessPoolExecutor(max_workers=self.args.parse_workers or os.cpu_count())
 
-    def add_arguments(self, parser):
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         super().add_arguments(parser)
         parser.add_argument(
             "outlet",
@@ -161,14 +163,14 @@ class CorpusScraper(runner.Runner):
             help="S3 bucket for caching completed months (overrides S3_BUCKET env var)",
         )
 
-    async def cleanup(self):
+    async def cleanup(self) -> None:
         await super().cleanup()
         if "session" in self.__dict__:
             await self.session.close()
         if "pool" in self.__dict__:
             self.pool.shutdown(wait=False)
 
-    async def run_discovery(self):
+    async def run_discovery(self) -> None:
         if self.url_queue_path.exists():
             self.log.info(f"✓ {self.url_queue_path} already exists — skipping discovery")
             return
@@ -203,7 +205,7 @@ class CorpusScraper(runner.Runner):
 
         self.log.success(f"✓ Wrote {len(deduped)} URLs to {self.url_queue_path}")
 
-    async def run_extraction(self):
+    async def run_extraction(self) -> None:
         queue = self._load_queue()
         done = self._already_done()
         remaining = [item for item in queue if item["url"] not in done]
@@ -306,10 +308,10 @@ class CorpusScraper(runner.Runner):
                         )
 
     @cached_property
-    def _slug(self):
+    def _slug(self) -> str:
         return self.args.outlet.lower().replace(" ", "_")
 
-    def _already_done(self):
+    def _already_done(self) -> set[str]:
         if not self.output_path.exists():
             return set()
         with self.output_path.open(newline="", encoding="utf-8") as f:
@@ -346,14 +348,21 @@ class CorpusScraper(runner.Runner):
         self.log.info(f"  Discovered {len(deduped)} URLs for {year}-{month:02d}")
         return len(deduped)
 
-    async def _discover_urls_for_month(self, sem, year, month):
+    async def _discover_urls_for_month(
+        self, sem: asyncio.Semaphore, year: int, month: int
+    ) -> list[dict[str, Any]]:
         sitemap_urls = self.config["sitemap_urls"](year, month)
         all_results = await asyncio.gather(
             *[self._fetch_sitemap(sem, u, year, month) for u in sitemap_urls]
         )
         return [item for sublist in all_results for item in sublist]
 
-    async def _fetch_and_extract(self, domain_sem, global_sem, item):
+    async def _fetch_and_extract(
+        self,
+        domain_sem: asyncio.Semaphore,
+        global_sem: asyncio.Semaphore,
+        item: dict[str, Any],
+    ) -> dict[str, Any] | None:
         url = item["url"]
 
         async with global_sem, domain_sem:
@@ -484,7 +493,9 @@ class CorpusScraper(runner.Runner):
         )
         return saved
 
-    async def _fetch_sitemap(self, sem, sitemap_url, year, month):
+    async def _fetch_sitemap(
+        self, sem: asyncio.Semaphore, sitemap_url: str, year: int, month: int
+    ) -> list[dict[str, Any]]:
         async with sem:
             await self.rate_limiter.acquire()
             try:
@@ -521,7 +532,7 @@ class CorpusScraper(runner.Runner):
             self.log.warning(f"  [{self.args.outlet}] XML parse error {sitemap_url}: {type(e).__name__}: {e}")
             return []
 
-    def _load_queue(self):
+    def _load_queue(self) -> list[dict[str, str]]:
         with self.url_queue_path.open(newline="", encoding="utf-8") as f:
             return list(csv.DictReader(f))
 
@@ -532,7 +543,7 @@ class CorpusScraper(runner.Runner):
         return Path(f"{self._slug}_{year}_{month:02d}_url_queue.csv")
 
 
-def main():
+def main() -> int | None:
     return CorpusScraper(*sys.argv[1:])()
 
 
