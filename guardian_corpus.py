@@ -4,6 +4,7 @@ import csv
 import time
 import argparse
 from calendar import monthrange
+from pathlib import Path
 
 BASE_URL = "https://content.guardianapis.com/search"
 
@@ -80,7 +81,7 @@ def main():
         raise SystemExit("Error: GUARDIAN_API_KEY environment variable is not set")
     query = " OR ".join(kw.strip() for kw in args.keywords.split(","))
 
-    with open(args.output_file, "w", newline="", encoding="utf-8") as f:
+    with Path(args.output_file).open("w", newline="", encoding="utf-8") as f:
         fieldnames = ["year", "month", "date", "title", "url", "section", "wordcount", "body"]
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()

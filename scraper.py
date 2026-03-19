@@ -194,7 +194,7 @@ class CorpusScraper(runner.Runner):
                 deduped.append(item)
         self.log.info(f"  After dedup: {len(deduped)}")
 
-        with open(self.url_queue_path, "w", newline="", encoding="utf-8") as f:
+        with self.url_queue_path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
                 f, fieldnames=["outlet", "url", "sitemap_date", "year", "month"]
             )
@@ -215,7 +215,7 @@ class CorpusScraper(runner.Runner):
 
         fieldnames = ["outlet", "year", "month", "date", "url", "wordcount", "body"]
         write_header = not self.output_path.exists() or len(done) == 0
-        f = open(self.output_path, "a", newline="", encoding="utf-8")
+        f = self.output_path.open("a", newline="", encoding="utf-8")
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         if write_header:
             writer.writeheader()
@@ -312,7 +312,7 @@ class CorpusScraper(runner.Runner):
     def _already_done(self):
         if not self.output_path.exists():
             return set()
-        with open(self.output_path, newline="", encoding="utf-8") as f:
+        with self.output_path.open(newline="", encoding="utf-8") as f:
             return {row["url"] for row in csv.DictReader(f)}
 
     async def _discover_month(self, year: int, month: int, queue_file: Path) -> int:
@@ -323,7 +323,7 @@ class CorpusScraper(runner.Runner):
         """
         if queue_file.exists():
             self.log.info(f"  ✓ {queue_file} already exists — skipping discovery")
-            with open(queue_file, newline="", encoding="utf-8") as f:
+            with queue_file.open(newline="", encoding="utf-8") as f:
                 return sum(1 for _ in csv.DictReader(f))
 
         sem = asyncio.Semaphore(self.args.global_concurrency)
@@ -336,7 +336,7 @@ class CorpusScraper(runner.Runner):
                 seen.add(item["url"])
                 deduped.append(item)
 
-        with open(queue_file, "w", newline="", encoding="utf-8") as f:
+        with queue_file.open("w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
                 f, fieldnames=["outlet", "url", "sitemap_date", "year", "month"]
             )
@@ -421,12 +421,12 @@ class CorpusScraper(runner.Runner):
 
         Returns the number of articles saved in this run.
         """
-        with open(queue_file, newline="", encoding="utf-8") as f:
+        with queue_file.open(newline="", encoding="utf-8") as f:
             queue = list(csv.DictReader(f))
 
         done: set[str] = set()
         if output_file.exists():
-            with open(output_file, newline="", encoding="utf-8") as f:
+            with output_file.open(newline="", encoding="utf-8") as f:
                 done = {row["url"] for row in csv.DictReader(f)}
 
         remaining = [item for item in queue if item["url"] not in done]
@@ -448,7 +448,7 @@ class CorpusScraper(runner.Runner):
         errors = 0
         t0 = time.monotonic()
 
-        with open(output_file, "a", newline="", encoding="utf-8") as f:
+        with output_file.open("a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             if write_header:
                 writer.writeheader()
@@ -522,7 +522,7 @@ class CorpusScraper(runner.Runner):
             return []
 
     def _load_queue(self):
-        with open(self.url_queue_path, newline="", encoding="utf-8") as f:
+        with self.url_queue_path.open(newline="", encoding="utf-8") as f:
             return list(csv.DictReader(f))
 
     def _month_output_path(self, year: int, month: int) -> Path:
