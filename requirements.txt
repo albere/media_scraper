@@ -48,6 +48,7 @@ propcache==0.4.1
 pydantic==2.12.5
 pydantic_core==2.41.5
 Pygments==2.19.2
+PyYAML==6.0.2
 pyparsing==3.3.2
 pyphen==0.17.2
 python-dateutil==2.9.0.post0

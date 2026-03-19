@@ -9,9 +9,12 @@ from calendar import monthrange
 from concurrent.futures import ProcessPoolExecutor
 from functools import cached_property
 from pathlib import Path
+import re
 from typing import Any, Sequence
 import argparse
 import xml.etree.ElementTree as ET
+
+import yaml
 
 import trafilatura
 
@@ -19,41 +22,8 @@ import aio.run.runner as runner
 
 _log = logging.getLogger(__name__)
 
-OUTLET_CONFIGS: dict[str, dict[str, Any]] = {
-    "Daily Mirror": {
-        "domain": "mirror.co.uk",
-        "sitemap_urls": lambda year, month: [
-            f"https://www.mirror.co.uk/sitemaps/map_art_{year}-{month:02d}-01.xml"
-        ],
-        "date_source": "trafilatura",
-        "crawl_delay": 2,
-    },
-    "Daily Express": {
-        "domain": "express.co.uk",
-        "sitemap_urls": lambda year, month: [
-            f"https://www.express.co.uk/news/{year}{month:02d}.xml"
-        ],
-        "date_source": "trafilatura",
-        "crawl_delay": 2,
-    },
-    "Daily Star": {
-        "domain": "dailystar.co.uk",
-        "sitemap_urls": lambda year, month: [
-            f"https://www.dailystar.co.uk/sitemaps/map_art_{year}-{month:02d}-01.xml"
-        ],
-        "date_source": "trafilatura",
-        "crawl_delay": 10,
-    },
-    "The Independent": {
-        "domain": "independent.co.uk",
-        "sitemap_urls": lambda year, month: [
-            f"https://www.independent.co.uk/sitemaps/sitemap-articles-{year}-{month:02d}-{day:02d}.xml"
-            for day in range(1, monthrange(year, month)[1] + 1)
-        ],
-        "date_source": "trafilatura",
-        "crawl_delay": 2,
-    },
-}
+DAY_PLACEHOLDER_PATTERN = re.compile(r"{day(?::[^}]*)?}")
+
 
 _DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -98,8 +68,45 @@ def _extract_article(html: str) -> tuple[str | None, str | None]:
 class CorpusScraper(runner.Runner):
 
     @cached_property
+    def outlet_config_path(self) -> Path:
+        if self.args.outlet_config_path:
+            return Path(self.args.outlet_config_path)
+        try:
+            base = Path(__file__).resolve().parent
+        except NameError:
+            base = Path.cwd()  # __file__ may be missing in interactive contexts
+        return base / "outlet_configs.yaml"
+
+    @cached_property
+    def outlet_configs(self) -> dict[str, dict[str, Any]]:
+        path = self.outlet_config_path
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Outlet config file not found at {path} "
+                "(set --outlet-config-path to override)"
+            )
+
+        with path.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+
+        if not data:
+            raise ValueError(f"Outlet config file {path} is empty or invalid")
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"Outlet config must be a mapping, got {type(data).__name__}"
+            )
+
+        return data
+
+    @cached_property
     def config(self) -> dict[str, Any]:
-        return OUTLET_CONFIGS[self.args.outlet]
+        configs = self.outlet_configs
+        if self.args.outlet not in configs:
+            raise ValueError(
+                f"Outlet '{self.args.outlet}' not found in {self.outlet_config_path}. "
+                "Check the YAML configuration."
+            )
+        return configs[self.args.outlet]
 
     @cached_property
     def crawl_delay(self) -> float:
@@ -133,8 +140,15 @@ class CorpusScraper(runner.Runner):
         super().add_arguments(parser)
         parser.add_argument(
             "outlet",
-            choices=list(OUTLET_CONFIGS.keys()),
-            help="News outlet to scrape",
+            help=(
+                "News outlet to scrape (must exist in outlet config YAML, "
+                "default: outlet_configs.yaml beside this script)"
+            ),
+        )
+        parser.add_argument(
+            "--outlet-config-path",
+            default=os.environ.get("OUTLET_CONFIG_PATH"),
+            help="Path to outlet config YAML (default: outlet_configs.yaml)",
         )
         parser.add_argument("--year-start", type=int, default=2010)
         parser.add_argument("--year-end", type=int, default=2022,
@@ -317,6 +331,41 @@ class CorpusScraper(runner.Runner):
         with self.output_path.open(newline="", encoding="utf-8") as f:
             return {row["url"] for row in csv.DictReader(f)}
 
+    def _sitemap_urls(self, year: int, month: int) -> list[str]:
+        if "sitemap_templates" not in self.config:
+            raise KeyError(f"No sitemap_templates configured for {self.args.outlet}")
+
+        templates = self.config["sitemap_templates"]
+        if not templates:
+            raise ValueError(f"sitemap_templates for {self.args.outlet} is empty")
+
+        urls: list[str] = []
+        last_day = monthrange(year, month)[1]
+
+        for template in templates:
+            if not isinstance(template, str):
+                raise TypeError(
+                    f"Sitemap template for {self.args.outlet} must be a string, "
+                    f"got {type(template).__name__}"
+                )
+
+            try:
+                if DAY_PLACEHOLDER_PATTERN.search(template):
+                    # Some outlets publish one sitemap per day; expand those templates
+                    # (note this may generate up to 31 URLs per template).
+                    urls.extend(
+                        template.format(year=year, month=month, day=day)
+                        for day in range(1, last_day + 1)
+                    )
+                else:
+                    urls.append(template.format(year=year, month=month))
+            except KeyError as exc:
+                raise KeyError(
+                    f"Unknown placeholder {exc} in sitemap template for {self.args.outlet}"
+                ) from exc
+
+        return urls
+
     async def _discover_month(self, year: int, month: int, queue_file: Path) -> int:
         """Discover URLs for a single (year, month) and write them to *queue_file*.
 
@@ -351,7 +400,7 @@ class CorpusScraper(runner.Runner):
     async def _discover_urls_for_month(
         self, sem: asyncio.Semaphore, year: int, month: int
     ) -> list[dict[str, Any]]:
-        sitemap_urls = self.config["sitemap_urls"](year, month)
+        sitemap_urls = self._sitemap_urls(year, month)
         all_results = await asyncio.gather(
             *[self._fetch_sitemap(sem, u, year, month) for u in sitemap_urls]
         )
