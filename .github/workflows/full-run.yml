@@ -6,11 +6,13 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 90
     permissions:
       contents: read
+      id-token: write
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
         year:
         - 2010
@@ -36,6 +38,11 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
+
     - uses: actions/setup-python@v5
       with:
         python-version: "3.12"
@@ -44,6 +51,8 @@ jobs:
     - run: pip install -r requirements.txt
 
     - name: Scrape ${{ matrix.source }} - ${{ matrix.year }}
+      env:
+        S3_BUCKET: ${{ vars.S3_BUCKET }}
       run: |
           python scraper.py "${{ matrix.source }}" \
             --year-start ${{ matrix.year }} --year-end $(( ${{ matrix.year }} + 1 )) \
@@ -53,47 +62,30 @@ jobs:
             --parse-workers 4 \
             --batch-size 50
 
-    - name: Rename output for upload
-      id: rename
-      run: |
-          SLUG="${{ matrix.source }}"
-          SLUG="${SLUG,,}"
-          SLUG="${SLUG// /_}"
-          if [ -f "${SLUG}_corpus.csv" ]; then
-            mv "${SLUG}_corpus.csv" "corpus_${{ matrix.year }}_${SLUG}.csv"
-          else
-            echo "::warning::Expected corpus file ${SLUG}_corpus.csv not found — no output produced"
-          fi
-          echo "slug=${SLUG}" >> "$GITHUB_OUTPUT"
-
-    - name: Upload corpus artifact
+    - name: Upload any local corpus files as artifacts
+      if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: corpus-${{ matrix.year }}-${{ steps.rename.outputs.slug }}
-        path: corpus_${{ matrix.year }}_*.csv
+        name: corpus-${{ matrix.year }}-${{ matrix.source }}
+        path: "*_corpus.csv"
+        if-no-files-found: ignore
 
   aggregate:
     needs: scrape
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
 
     steps:
-    - name: Download all corpus artifacts
-      uses: actions/download-artifact@v4
+    - uses: aws-actions/configure-aws-credentials@v4
       with:
-        path: artifacts/
-        pattern: corpus-*
-        merge-multiple: true
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ vars.AWS_REGION }}
 
-    - name: Show collected files
+    - name: Show S3 corpus contents
+      env:
+        S3_BUCKET: ${{ vars.S3_BUCKET }}
       run: |
-          echo "=== Collected corpus files ==="
-          ls -la artifacts/
-          wc -l artifacts/*.csv 2>/dev/null || echo "No files produced"
-
-    - name: Upload full corpus
-      uses: actions/upload-artifact@v4
-      with:
-        name: full-corpus
-        path: artifacts/
+          echo "=== S3 corpus files ==="
+          aws s3 ls "s3://${S3_BUCKET}/" --recursive --human-readable | sort || true

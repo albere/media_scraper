@@ -123,6 +123,15 @@ class CorpusScraper(runner.Runner):
         parser.add_argument("--output-file", default=None)
         parser.add_argument("--url-queue-file", default=None)
         parser.add_argument("--user-agent", default=_DEFAULT_USER_AGENT)
+        parser.add_argument(
+            "--s3-bucket",
+            default=None,
+            help="S3 bucket for caching completed months (overrides S3_BUCKET env var)",
+        )
+
+    @cached_property
+    def _slug(self):
+        return self.args.outlet.lower().replace(" ", "_")
 
     @cached_property
     def config(self):
@@ -139,13 +148,13 @@ class CorpusScraper(runner.Runner):
     @cached_property
     def output_file(self):
         return self.args.output_file or (
-            f"{self.args.outlet.lower().replace(' ', '_')}_corpus.csv"
+            f"{self._slug}_corpus.csv"
         )
 
     @cached_property
     def url_queue_file(self):
         return self.args.url_queue_file or (
-            f"{self.args.outlet.lower().replace(' ', '_')}_url_queue.csv"
+            f"{self._slug}_url_queue.csv"
         )
 
     @cached_property
@@ -376,19 +385,161 @@ class CorpusScraper(runner.Runner):
         with open(self.output_file, newline="", encoding="utf-8") as f:
             return {row["url"] for row in csv.DictReader(f)}
 
+    # ── Per-month helpers ────────────────────────────────────────────────
+
+    def _month_queue_file(self, year: int, month: int) -> Path:
+        return Path(f"{self._slug}_{year}_{month:02d}_url_queue.csv")
+
+    def _month_output_file(self, year: int, month: int) -> Path:
+        return Path(f"{self._slug}_{year}_{month:02d}_corpus.csv")
+
+    async def _discover_month(self, year: int, month: int, queue_file: Path) -> int:
+        """Discover URLs for a single (year, month) and write them to *queue_file*.
+
+        Returns the number of (deduplicated) URLs found.  If *queue_file*
+        already exists the step is skipped and the existing row count returned.
+        """
+        if queue_file.exists():
+            self.log.info(f"  ✓ {queue_file} already exists — skipping discovery")
+            with open(queue_file, newline="", encoding="utf-8") as f:
+                return sum(1 for _ in csv.DictReader(f))
+
+        sem = asyncio.Semaphore(self.args.global_concurrency)
+        urls = await self._discover_urls_for_month(sem, year, month)
+
+        seen: set[str] = set()
+        deduped = []
+        for item in urls:
+            if item["url"] not in seen:
+                seen.add(item["url"])
+                deduped.append(item)
+
+        with open(queue_file, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f, fieldnames=["outlet", "url", "sitemap_date", "year", "month"]
+            )
+            writer.writeheader()
+            writer.writerows(deduped)
+
+        self.log.info(f"  Discovered {len(deduped)} URLs for {year}-{month:02d}")
+        return len(deduped)
+
+    async def _extract_month(
+        self, year: int, month: int, queue_file: Path, output_file: Path
+    ) -> int:
+        """Extract articles for a single (year, month) and append to *output_file*.
+
+        Returns the number of articles saved in this run.
+        """
+        with open(queue_file, newline="", encoding="utf-8") as f:
+            queue = list(csv.DictReader(f))
+
+        done: set[str] = set()
+        if output_file.exists():
+            with open(output_file, newline="", encoding="utf-8") as f:
+                done = {row["url"] for row in csv.DictReader(f)}
+
+        remaining = [item for item in queue if item["url"] not in done]
+        self.log.info(
+            f"  Extraction {year}-{month:02d}: {len(remaining)} to fetch "
+            f"({len(done)} already done)"
+        )
+
+        if not remaining:
+            return 0
+
+        fieldnames = ["outlet", "year", "month", "date", "url", "wordcount", "body"]
+        write_header = not output_file.exists() or len(done) == 0
+
+        domain_sem = asyncio.Semaphore(self.args.domain_concurrency)
+        global_sem = asyncio.Semaphore(self.args.global_concurrency)
+
+        saved = 0
+        errors = 0
+        t0 = time.monotonic()
+
+        with open(output_file, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if write_header:
+                writer.writeheader()
+
+            for i in range(0, len(remaining), self.args.batch_size):
+                batch = remaining[i: i + self.args.batch_size]
+                tasks = [
+                    self._fetch_and_extract(domain_sem, global_sem, item)
+                    for item in batch
+                ]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                for result in results:
+                    if isinstance(result, Exception):
+                        errors += 1
+                        self.log.error(f"  [error] {type(result).__name__}: {result}")
+                    elif isinstance(result, dict):
+                        writer.writerow(result)
+                        saved += 1
+
+                f.flush()
+                elapsed = time.monotonic() - t0
+                total_processed = i + len(batch)
+                rate = total_processed / elapsed if elapsed else 0
+                self.log.info(
+                    f"  [{total_processed}/{len(remaining)}] "
+                    f"{saved} saved · {errors} errors · {rate:.1f} articles/sec"
+                )
+
+        elapsed = time.monotonic() - t0
+        self.log.info(
+            f"  ✓ {year}-{month:02d}: {saved} articles in {elapsed / 60:.1f} min"
+        )
+        return saved
+
     @runner.cleansup
     @runner.catches((aiohttp.ClientError, KeyboardInterrupt))
     async def run(self) -> int | None:
+        from s3_cache import S3Cache
+
         self.log.info(f"=== Scraping {self.args.outlet} ===")
-        self.log.info(f"    Years: {self.args.year_start}-{self.args.year_end}")
-        self.log.info(f"    Months: {self.args.month_start}-{self.args.month_end}")
+        self.log.info(f"    Years:  {self.args.year_start}–{self.args.year_end - 1}")
+        self.log.info(f"    Months: {self.args.month_start}–{self.args.month_end - 1} (inclusive)")
         self.log.info(f"    Crawl delay: {self.crawl_delay}s")
         self.log.info(f"    Domain concurrency: {self.args.domain_concurrency}")
         self.log.info(f"    Parse workers: {self.args.parse_workers or os.cpu_count()}")
-        self.log.info(f"    Output: {self.output_file}")
 
-        await self.run_discovery()
-        await self.run_extraction()
+        async with S3Cache(self.args.s3_bucket) as cache:
+            for year in range(self.args.year_start, self.args.year_end):
+                for month in range(self.args.month_start, self.args.month_end):
+                    if await cache.exists(self.args.outlet, year, month):
+                        self.log.info(
+                            f"  Skipping {year}-{month:02d} (S3 cache hit)"
+                        )
+                        continue
+
+                    queue_file = self._month_queue_file(year, month)
+                    output_file = self._month_output_file(year, month)
+
+                    try:
+                        await self._discover_month(year, month, queue_file)
+                        await self._extract_month(year, month, queue_file, output_file)
+
+                        if output_file.exists() and output_file.stat().st_size > 0:
+                            await cache.upload(
+                                output_file, self.args.outlet, year, month
+                            )
+                            self.log.success(
+                                f"  ✓ {year}-{month:02d} complete and uploaded to S3"
+                            )
+                        else:
+                            self.log.warning(
+                                f"  ⚠ {year}-{month:02d}: no output produced — "
+                                "not uploading to S3"
+                            )
+                    except Exception as exc:
+                        self.log.error(
+                            f"  ✗ {year}-{month:02d} failed: "
+                            f"{type(exc).__name__}: {exc} — "
+                            "will retry on next run"
+                        )
 
 
 # ── Entry point ──────────────────────────────────────────────────────────
