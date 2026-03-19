@@ -240,7 +240,6 @@ class CorpusScraper(runner.Runner):
         global_sem = asyncio.Semaphore(self.args.global_concurrency)
 
         saved = 0
-        errors = 0
         t0 = time.monotonic()
 
         try:
@@ -266,7 +265,7 @@ class CorpusScraper(runner.Runner):
                 rate = total_processed / elapsed if elapsed else 0
                 self.log.info(
                     f"  [{total_processed}/{len(remaining)}] "
-                    f"{saved} saved · {errors} errors · {rate:.1f} articles/sec"
+                    f"{saved} saved · {rate:.1f} articles/sec"
                 )
         finally:
             f.close()
