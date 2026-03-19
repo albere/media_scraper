@@ -91,7 +91,10 @@ class CorpusScraper(runner.Runner):
     def outlet_config_path(self) -> Path:
         if self.args.outlet_config_path:
             return Path(self.args.outlet_config_path)
-        base = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
+        try:
+            base = Path(__file__).resolve().parent
+        except NameError:
+            base = Path.cwd()  # __file__ may be missing in interactive contexts
         return base / "outlet_configs.yaml"
 
     @cached_property
@@ -140,7 +143,10 @@ class CorpusScraper(runner.Runner):
         super().add_arguments(parser)
         parser.add_argument(
             "outlet",
-            help="News outlet to scrape (must exist in outlet config YAML)",
+            help=(
+                "News outlet to scrape (must exist in outlet config YAML, "
+                "default: outlet_configs.yaml beside this script)"
+            ),
         )
         parser.add_argument(
             "--outlet-config-path",
@@ -348,7 +354,8 @@ class CorpusScraper(runner.Runner):
 
             try:
                 if DAY_PLACEHOLDER_PATTERN.search(template):
-                    # Some outlets publish one sitemap per day; expand those templates.
+                    # Some outlets publish one sitemap per day; expand those templates
+                    # (note this may generate up to 31 URLs per template).
                     urls.extend(
                         template.format(year=year, month=month, day=day)
                         for day in range(1, last_day + 1)
