@@ -209,7 +209,7 @@ class CorpusScraper(runner.Runner):
                             f"  Skipping {year}-{month:02d} (S3 cache hit)"
                         )
                         continue
-                    await self.scrape_month(year, month)
+                    await self.scrape_month(cache, year, month)
 
     async def run_discovery(self) -> None:
         if self.url_queue_path.exists():
@@ -245,7 +245,7 @@ class CorpusScraper(runner.Runner):
 
         self.log.success(f"✓ Wrote {len(deduped)} URLs to {self.url_queue_path}")
 
-    async def scrape_month(self, year, month) -> None:
+    async def scrape_month(self, cache, year, month) -> None:
         queue_file = self._month_queue_path(year, month)
         output_file = self._month_output_path(year, month)
         await self._discover_month(year, month, queue_file)
