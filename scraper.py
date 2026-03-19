@@ -91,7 +91,8 @@ class CorpusScraper(runner.Runner):
     def outlet_config_path(self) -> Path:
         if self.args.outlet_config_path:
             return Path(self.args.outlet_config_path)
-        return Path(__file__).with_name("outlet_configs.yaml")
+        base = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
+        return base / "outlet_configs.yaml"
 
     @cached_property
     def outlet_configs(self) -> dict[str, dict[str, Any]]:
@@ -347,6 +348,7 @@ class CorpusScraper(runner.Runner):
 
             try:
                 if DAY_PLACEHOLDER_PATTERN.search(template):
+                    # Some outlets publish one sitemap per day; expand those templates.
                     urls.extend(
                         template.format(year=year, month=month, day=day)
                         for day in range(1, last_day + 1)
