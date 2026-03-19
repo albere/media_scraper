@@ -67,31 +67,19 @@ def _extract_article(html: str) -> tuple[str | None, str | None]:
 
 class CorpusScraper(runner.Runner):
 
-    _CONFIG_PATH_OVERRIDE = os.environ.get("OUTLET_CONFIG_PATH")
-    _CONFIG_PATH = (
-        Path(_CONFIG_PATH_OVERRIDE)
-        if _CONFIG_PATH_OVERRIDE
-        else Path(__file__).with_name("outlet_configs.yaml")
-    )
-    _OUTLET_CONFIGS: dict[str, dict[str, Any]] | None = None
-
-    @classmethod
-    def _load_outlet_configs(cls) -> dict[str, dict[str, Any]]:
-        if not cls._CONFIG_PATH.exists():
-            location = (
-                "set via OUTLET_CONFIG_PATH"
-                if cls._CONFIG_PATH_OVERRIDE
-                else "default location"
-            )
+    @staticmethod
+    def _load_outlet_configs(path: Path) -> dict[str, dict[str, Any]]:
+        if not path.exists():
             raise FileNotFoundError(
-                f"Outlet config file not found at {cls._CONFIG_PATH} ({location})"
+                f"Outlet config file not found at {path} "
+                "(set --outlet-config-path to override)"
             )
 
-        with cls._CONFIG_PATH.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
 
         if not data:
-            raise ValueError("Outlet config file is empty or invalid")
+            raise ValueError(f"Outlet config file {path} is empty or invalid")
         if not isinstance(data, dict):
             raise ValueError(
                 f"Outlet config must be a mapping, got {type(data).__name__}"
@@ -99,15 +87,25 @@ class CorpusScraper(runner.Runner):
 
         return data
 
-    @classmethod
-    def get_outlet_configs(cls) -> dict[str, dict[str, Any]]:
-        if cls._OUTLET_CONFIGS is None:
-            cls._OUTLET_CONFIGS = cls._load_outlet_configs()
-        return cls._OUTLET_CONFIGS
+    @cached_property
+    def outlet_config_path(self) -> Path:
+        if self.args.outlet_config_path:
+            return Path(self.args.outlet_config_path)
+        return Path(__file__).with_name("outlet_configs.yaml")
+
+    @cached_property
+    def outlet_configs(self) -> dict[str, dict[str, Any]]:
+        return self._load_outlet_configs(self.outlet_config_path)
 
     @cached_property
     def config(self) -> dict[str, Any]:
-        return type(self).get_outlet_configs()[self.args.outlet]
+        configs = self.outlet_configs
+        if self.args.outlet not in configs:
+            raise ValueError(
+                f"Outlet '{self.args.outlet}' not found in {self.outlet_config_path}. "
+                "Check the YAML configuration."
+            )
+        return configs[self.args.outlet]
 
     @cached_property
     def crawl_delay(self) -> float:
@@ -141,8 +139,12 @@ class CorpusScraper(runner.Runner):
         super().add_arguments(parser)
         parser.add_argument(
             "outlet",
-            choices=list(type(self).get_outlet_configs().keys()),
-            help="News outlet to scrape",
+            help="News outlet to scrape (must exist in outlet config YAML)",
+        )
+        parser.add_argument(
+            "--outlet-config-path",
+            default=os.environ.get("OUTLET_CONFIG_PATH"),
+            help="Path to outlet config YAML (default: outlet_configs.yaml)",
         )
         parser.add_argument("--year-start", type=int, default=2010)
         parser.add_argument("--year-end", type=int, default=2022,
