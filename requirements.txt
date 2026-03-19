@@ -1,4 +1,4 @@
-aio.run.runner
+aio.run.runner==0.3.4
 aiobotocore==3.3.0
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.3
