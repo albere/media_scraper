@@ -23,28 +23,7 @@ import aio.run.runner as runner
 _log = logging.getLogger(__name__)
 
 _DAY_PLACEHOLDER_PATTERN = re.compile(r"{\s*day(?::[^}]*)?}")
-_CONFIG_OVERRIDE = os.environ.get("OUTLET_CONFIG_PATH")
-_CONFIG_PATH = (
-    Path(_CONFIG_OVERRIDE)
-    if _CONFIG_OVERRIDE
-    else Path(__file__).with_name("outlet_configs.yaml")
-)
 
-
-def _load_outlet_configs() -> dict[str, dict[str, Any]]:
-    if not _CONFIG_PATH.exists():
-        raise FileNotFoundError(f"Outlet config file not found: {_CONFIG_PATH}")
-
-    with _CONFIG_PATH.open("r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-
-    if not isinstance(data, dict):
-        raise ValueError(f"Outlet config must be a mapping, got {type(data).__name__}")
-
-    return data
-
-
-OUTLET_CONFIGS: dict[str, dict[str, Any]] = _load_outlet_configs()
 
 _DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -88,9 +67,40 @@ def _extract_article(html: str) -> tuple[str | None, str | None]:
 
 class CorpusScraper(runner.Runner):
 
+    _CONFIG_OVERRIDE = os.environ.get("OUTLET_CONFIG_PATH")
+    _CONFIG_PATH = (
+        Path(_CONFIG_OVERRIDE)
+        if _CONFIG_OVERRIDE
+        else Path(__file__).with_name("outlet_configs.yaml")
+    )
+    _OUTLET_CONFIGS: dict[str, dict[str, Any]] | None = None
+
+    @classmethod
+    def _load_outlet_configs(cls) -> dict[str, dict[str, Any]]:
+        if not cls._CONFIG_PATH.exists():
+            raise FileNotFoundError(f"Outlet config file not found: {cls._CONFIG_PATH}")
+
+        with cls._CONFIG_PATH.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+
+        if not data:
+            raise ValueError("Outlet config file is empty or invalid")
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"Outlet config must be a mapping, got {type(data).__name__}"
+            )
+
+        return data
+
+    @classmethod
+    def outlet_configs(cls) -> dict[str, dict[str, Any]]:
+        if cls._OUTLET_CONFIGS is None:
+            cls._OUTLET_CONFIGS = cls._load_outlet_configs()
+        return cls._OUTLET_CONFIGS
+
     @cached_property
     def config(self) -> dict[str, Any]:
-        return OUTLET_CONFIGS[self.args.outlet]
+        return type(self).outlet_configs()[self.args.outlet]
 
     @cached_property
     def crawl_delay(self) -> float:
@@ -124,7 +134,7 @@ class CorpusScraper(runner.Runner):
         super().add_arguments(parser)
         parser.add_argument(
             "outlet",
-            choices=list(OUTLET_CONFIGS.keys()),
+            choices=list(type(self).outlet_configs().keys()),
             help="News outlet to scrape",
         )
         parser.add_argument("--year-start", type=int, default=2010)
@@ -323,13 +333,18 @@ class CorpusScraper(runner.Runner):
                     f"got {type(template).__name__}"
                 )
 
-            if _DAY_PLACEHOLDER_PATTERN.search(template):
-                urls.extend(
-                    template.format(year=year, month=month, day=day)
-                    for day in range(1, last_day + 1)
-                )
-            else:
-                urls.append(template.format(year=year, month=month))
+            try:
+                if _DAY_PLACEHOLDER_PATTERN.search(template):
+                    urls.extend(
+                        template.format(year=year, month=month, day=day)
+                        for day in range(1, last_day + 1)
+                    )
+                else:
+                    urls.append(template.format(year=year, month=month))
+            except KeyError as exc:
+                raise KeyError(
+                    f"Unknown placeholder {exc} in sitemap template for {self.args.outlet}"
+                ) from exc
 
         return urls
 
