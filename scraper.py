@@ -13,47 +13,31 @@ from typing import Any, Sequence
 import argparse
 import xml.etree.ElementTree as ET
 
+import yaml
+
 import trafilatura
 
 import aio.run.runner as runner
 
 _log = logging.getLogger(__name__)
 
-OUTLET_CONFIGS: dict[str, dict[str, Any]] = {
-    "Daily Mirror": {
-        "domain": "mirror.co.uk",
-        "sitemap_urls": lambda year, month: [
-            f"https://www.mirror.co.uk/sitemaps/map_art_{year}-{month:02d}-01.xml"
-        ],
-        "date_source": "trafilatura",
-        "crawl_delay": 2,
-    },
-    "Daily Express": {
-        "domain": "express.co.uk",
-        "sitemap_urls": lambda year, month: [
-            f"https://www.express.co.uk/news/{year}{month:02d}.xml"
-        ],
-        "date_source": "trafilatura",
-        "crawl_delay": 2,
-    },
-    "Daily Star": {
-        "domain": "dailystar.co.uk",
-        "sitemap_urls": lambda year, month: [
-            f"https://www.dailystar.co.uk/sitemaps/map_art_{year}-{month:02d}-01.xml"
-        ],
-        "date_source": "trafilatura",
-        "crawl_delay": 10,
-    },
-    "The Independent": {
-        "domain": "independent.co.uk",
-        "sitemap_urls": lambda year, month: [
-            f"https://www.independent.co.uk/sitemaps/sitemap-articles-{year}-{month:02d}-{day:02d}.xml"
-            for day in range(1, monthrange(year, month)[1] + 1)
-        ],
-        "date_source": "trafilatura",
-        "crawl_delay": 2,
-    },
-}
+_CONFIG_PATH = Path(__file__).with_name("outlet_configs.yaml")
+
+
+def _load_outlet_configs() -> dict[str, dict[str, Any]]:
+    if not _CONFIG_PATH.exists():
+        raise FileNotFoundError(f"Outlet config file not found: {_CONFIG_PATH}")
+
+    with _CONFIG_PATH.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    if not isinstance(data, dict):
+        raise ValueError(f"Outlet config must be a mapping, got {type(data).__name__}")
+
+    return data
+
+
+OUTLET_CONFIGS: dict[str, dict[str, Any]] = _load_outlet_configs()
 
 _DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -317,6 +301,31 @@ class CorpusScraper(runner.Runner):
         with self.output_path.open(newline="", encoding="utf-8") as f:
             return {row["url"] for row in csv.DictReader(f)}
 
+    def _sitemap_urls(self, year: int, month: int) -> list[str]:
+        templates = self.config.get("sitemap_templates")
+        if not templates:
+            raise ValueError(f"No sitemap templates configured for {self.args.outlet}")
+
+        urls: list[str] = []
+        last_day = monthrange(year, month)[1]
+
+        for template in templates:
+            if not isinstance(template, str):
+                raise TypeError(
+                    f"Sitemap template for {self.args.outlet} must be a string, "
+                    f"got {type(template).__name__}"
+                )
+
+            if "{day" in template:
+                urls.extend(
+                    template.format(year=year, month=month, day=day)
+                    for day in range(1, last_day + 1)
+                )
+            else:
+                urls.append(template.format(year=year, month=month))
+
+        return urls
+
     async def _discover_month(self, year: int, month: int, queue_file: Path) -> int:
         """Discover URLs for a single (year, month) and write them to *queue_file*.
 
@@ -351,7 +360,7 @@ class CorpusScraper(runner.Runner):
     async def _discover_urls_for_month(
         self, sem: asyncio.Semaphore, year: int, month: int
     ) -> list[dict[str, Any]]:
-        sitemap_urls = self.config["sitemap_urls"](year, month)
+        sitemap_urls = self._sitemap_urls(year, month)
         all_results = await asyncio.gather(
             *[self._fetch_sitemap(sem, u, year, month) for u in sitemap_urls]
         )
