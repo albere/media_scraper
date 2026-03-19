@@ -521,9 +521,7 @@ class CorpusScraper(runner.Runner):
                     first_error = batch_errors[0]
                     raise RuntimeError(
                         f"Extraction failed: {type(first_error).__name__}: {first_error}"
-                    ) from (
-                        first_error if isinstance(first_error, Exception) else None
-                    )
+                    ) from first_error
 
                 for result in results:
                     if isinstance(result, dict):
