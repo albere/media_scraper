@@ -1,19 +1,24 @@
-import os
-import requests
-import csv
-import time
 import argparse
+import csv
+import os
+import time
 from calendar import monthrange
 from pathlib import Path
+from typing import Any, Dict, List
+
+import requests
 
 BASE_URL = "https://content.guardianapis.com/search"
 
-def get_articles_for_month(year, month, query, min_words, api_key):
+
+def get_articles_for_month(
+    year: int, month: int, query: str, min_words: int, api_key: str
+) -> List[Dict[str, Any]]:
     start_date = f"{year}-{month:02d}-01"
     last_day = monthrange(year, month)[1]
     end_date = f"{year}-{month:02d}-{last_day}"
 
-    articles = []
+    articles: List[Dict[str, Any]] = []
     page = 1
     total_pages = 1
 
@@ -43,23 +48,26 @@ def get_articles_for_month(year, month, query, min_words, api_key):
             body = fields.get("bodyText", "") or ""
 
             if wordcount >= min_words and body:
-                articles.append({
-                    "year": year,
-                    "month": month,
-                    "date": article["webPublicationDate"],
-                    "title": article["webTitle"],
-                    "url": article["webUrl"],
-                    "section": article["sectionId"],
-                    "wordcount": wordcount,
-                    "body": body
-                })
+                articles.append(
+                    {
+                        "year": year,
+                        "month": month,
+                        "date": article["webPublicationDate"],
+                        "title": article["webTitle"],
+                        "url": article["webUrl"],
+                        "section": article["sectionId"],
+                        "wordcount": wordcount,
+                        "body": body,
+                    }
+                )
 
         page += 1
         time.sleep(0.1)  # be polite to the API
 
     return articles
 
-def main():
+
+def main() -> None:
     parser = argparse.ArgumentParser(description="Fetch Guardian articles into a CSV corpus")
     parser.add_argument("--year-start", type=int, default=2010)
     parser.add_argument("--year-end", type=int, default=2026,
