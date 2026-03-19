@@ -22,7 +22,7 @@ import aio.run.runner as runner
 
 _log = logging.getLogger(__name__)
 
-_DAY_PLACEHOLDER_PATTERN = re.compile(r"{\s*day(?::[^}]*)?}")
+_DAY_PLACEHOLDER_PATTERN = re.compile(r"{day(?::[^}]*)?}")
 
 
 _DEFAULT_USER_AGENT = (
@@ -93,14 +93,14 @@ class CorpusScraper(runner.Runner):
         return data
 
     @classmethod
-    def outlet_configs(cls) -> dict[str, dict[str, Any]]:
+    def get_outlet_configs(cls) -> dict[str, dict[str, Any]]:
         if cls._OUTLET_CONFIGS is None:
             cls._OUTLET_CONFIGS = cls._load_outlet_configs()
         return cls._OUTLET_CONFIGS
 
     @cached_property
     def config(self) -> dict[str, Any]:
-        return type(self).outlet_configs()[self.args.outlet]
+        return type(self).get_outlet_configs()[self.args.outlet]
 
     @cached_property
     def crawl_delay(self) -> float:
@@ -134,7 +134,7 @@ class CorpusScraper(runner.Runner):
         super().add_arguments(parser)
         parser.add_argument(
             "outlet",
-            choices=list(type(self).outlet_configs().keys()),
+            choices=list(type(self).get_outlet_configs().keys()),
             help="News outlet to scrape",
         )
         parser.add_argument("--year-start", type=int, default=2010)
@@ -319,9 +319,12 @@ class CorpusScraper(runner.Runner):
             return {row["url"] for row in csv.DictReader(f)}
 
     def _sitemap_urls(self, year: int, month: int) -> list[str]:
+        if "sitemap_templates" not in self.config:
+            raise KeyError(f"No sitemap_templates configured for {self.args.outlet}")
+
         templates = self.config.get("sitemap_templates")
         if not templates:
-            raise ValueError(f"No sitemap templates configured for {self.args.outlet}")
+            raise ValueError(f"sitemap_templates for {self.args.outlet} is empty")
 
         urls: list[str] = []
         last_day = monthrange(year, month)[1]
