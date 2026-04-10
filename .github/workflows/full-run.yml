@@ -6,7 +6,7 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
     permissions:
       contents: read
       id-token: write
@@ -31,9 +31,21 @@ jobs:
         - 2023
         - 2024
         - 2025
+        month:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
         source:
-        - "Daily Express"
-        - "Daily Star"
+        - "The Independent"
 
     steps:
     - uses: actions/checkout@v4
@@ -56,7 +68,7 @@ jobs:
       run: |
           python scraper.py "${{ matrix.source }}" \
             --year-start ${{ matrix.year }} --year-end $(( ${{ matrix.year }} + 1 )) \
-            --month-start 1 --month-end 13 \
+            --month-start ${{ matrix.month }} --month-end $(( ${{ matrix.month }} + 1 )) \
             --crawl-delay .0001 \
             --domain-concurrency 4 \
             --parse-workers 4 \
@@ -66,7 +78,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: corpus-${{ matrix.year }}-${{ matrix.source }}
+        name: corpus-${{ matrix.year }}-${{ matrix.month }}-${{ matrix.source }}
         path: "*_corpus.csv"
         if-no-files-found: ignore
 
