@@ -19,6 +19,8 @@ import trafilatura
 import yaml
 from s3_cache import S3Cache
 
+csv.field_size_limit(10 * 1024 * 1024)  # 10 MB
+
 _log = logging.getLogger(__name__)
 
 DAY_PLACEHOLDER_PATTERN = re.compile(r"{day(?::[^}]*)?}")
@@ -209,7 +211,7 @@ class CorpusScraper(runner.Runner):
                             f"  Skipping {year}-{month:02d} (S3 cache hit)"
                         )
                         continue
-                    await self.scrape_month(cache, year, month)
+                    await self.scrape_month(year, month, cache)
 
     async def run_discovery(self) -> None:
         if self.url_queue_path.exists():
@@ -245,12 +247,12 @@ class CorpusScraper(runner.Runner):
 
         self.log.success(f"✓ Wrote {len(deduped)} URLs to {self.url_queue_path}")
 
-    async def scrape_month(self, cache, year, month) -> None:
+    async def scrape_month(self, year, month, cache) -> None:
         queue_file = self._month_queue_path(year, month)
         output_file = self._month_output_path(year, month)
         await self._discover_month(year, month, queue_file)
         await self._extract_month(year, month, queue_file, output_file)
-        if not output_file.exists or not output_file.stat().st_size > 0:
+        if not output_file.exists() or not output_file.stat().st_size > 0:
             self.log.warning(
                 f"  ⚠ {year}-{month:02d}: no output produced — "
                 "not uploading to S3")
@@ -363,17 +365,22 @@ class CorpusScraper(runner.Runner):
                 async with self.session.get(
                     url, timeout=aiohttp.ClientTimeout(total=30)
                 ) as r:
+                    if r.status == 403:
+                        raise ScrapeError(f"[{url}] HTTP 403 — likely blocked, aborting run")
                     if r.status != 200:
-                        raise ScrapeError(f"[{url}] HTTP {r.status}")
+                        self.log.error(f"[{url}] HTTP {r.status}")
+                        return None
                     html = await r.text()
             except aiohttp.ClientError as e:
-                raise ScrapeError(f"[{url}] Fetch error: {type(e).__name__}: {e}") from e
+                self.log.error(f"[{url}] Fetch error: {type(e).__name__}: {e}")
+                return None
 
         loop = asyncio.get_running_loop()
         text, extracted_date = await loop.run_in_executor(self.pool, _extract_article, html)
 
         if not text:
-            raise ParseError(f"[{url}] Parse failed: no text extracted")
+            self.log.debug(f"[{url}] Parse failed: no text extracted")
+            return None
 
         # Validate date matches target year/month
         date = extracted_date
@@ -430,10 +437,19 @@ class CorpusScraper(runner.Runner):
             with output_file.open(newline="", encoding="utf-8") as f:
                 done = {row["url"] for row in csv.DictReader(f)}
 
-        remaining = [item for item in queue if item["url"] not in done]
+        checked_file = output_file.with_suffix(".checked.csv")
+        self.log.info(f"  DEBUG checked_file={checked_file.resolve()} exists={checked_file.exists()}")
+        checked: set[str] = set()
+        if checked_file.exists():
+            with checked_file.open(newline="", encoding="utf-8") as f:
+                checked = {row["url"] for row in csv.DictReader(f)}
+
+        remaining = [item for item in queue
+                     if item["url"] not in done and item["url"] not in checked]
         self.log.info(
             f"  Extraction {year}-{month:02d}: {len(remaining)} to fetch "
-            f"({len(done)} already done)"
+            f"({len(done)} saved, {len(checked)} checked, "
+            f"{len(queue) - len(remaining)} skipped)"
         )
 
         if not remaining:
@@ -441,6 +457,7 @@ class CorpusScraper(runner.Runner):
 
         fieldnames = ["outlet", "year", "month", "date", "url", "wordcount", "body"]
         write_header = not output_file.exists() or len(done) == 0
+        write_checked_header = not checked_file.exists() or checked_file.stat().st_size == 0
 
         domain_sem = asyncio.Semaphore(self.args.domain_concurrency)
         global_sem = asyncio.Semaphore(self.args.global_concurrency)
@@ -449,23 +466,42 @@ class CorpusScraper(runner.Runner):
         errors = 0
         t0 = time.monotonic()
 
-        with output_file.open("a", newline="", encoding="utf-8") as f:
+        with output_file.open("a", newline="", encoding="utf-8") as f, \
+             checked_file.open("a", newline="", encoding="utf-8") as cf:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             if write_header:
                 writer.writeheader()
+            checked_writer = csv.DictWriter(cf, fieldnames=["url"])
+            if write_checked_header:
+                checked_writer.writeheader()
 
             for i in range(0, len(remaining), self.args.batch_size):
                 batch = remaining[i: i + self.args.batch_size]
                 results = await asyncio.gather(
                     *[self._fetch_and_extract(domain_sem, global_sem, item)
                       for item
-                      in batch])
+                      in batch],
+                    return_exceptions=True)
 
                 for result in results:
-                    if isinstance(result, dict):
+                    if isinstance(result, ScrapeError):
+                        # Flush checked URLs before aborting so progress is saved
+                        for item in batch:
+                            checked_writer.writerow({"url": item["url"]})
+                        cf.flush()
+                        raise result
+                    elif isinstance(result, Exception):
+                        self.log.error(f"  Unhandled batch error: {type(result).__name__}: {result}")
+                        errors += 1
+                    elif isinstance(result, dict):
                         writer.writerow(result)
                         saved += 1
+
+                # Record all URLs in this batch as checked
+                for item in batch:
+                    checked_writer.writerow({"url": item["url"]})
                 f.flush()
+                cf.flush()
                 elapsed = time.monotonic() - t0
                 total_processed = i + len(batch)
                 rate = total_processed / elapsed if elapsed else 0
@@ -522,9 +558,11 @@ class CorpusScraper(runner.Runner):
                     })
             return found
         except ET.ParseError as e:
-            raise ParseError(
-                f"[{self.args.outlet}] XML parse error {sitemap_url}: {type(e).__name__}: {e}"
-            ) from e
+            self.log.warning(
+                f"[{self.args.outlet}] XML parse error {sitemap_url}: {type(e).__name__}: {e} "
+                "— skipping this sitemap"
+            )
+            return[]
 
     def _load_queue(self) -> list[dict[str, str]]:
         return list(csv.DictReader(self.url_queue_path.read_text().splitlines()))
