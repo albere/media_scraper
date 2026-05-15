@@ -174,7 +174,7 @@ class CorpusScraper(runner.Runner):
         parser.add_argument("--min-words", type=int, default=200)
         parser.add_argument(
             "--keywords",
-            default="immigration,asylum,migrants,refugees,borders,migration",
+            default="immigration,asylum,migrants,refugees,borders,migration,migrant,refugee,border,immigrant,immigrants",
             help="Comma-separated keywords to filter articles",
         )
         parser.add_argument("--output-file", default=None)
@@ -206,7 +206,7 @@ class CorpusScraper(runner.Runner):
         async with S3Cache(self.args.s3_bucket) as cache:
             for year in range(self.args.year_start, self.args.year_end):
                 for month in range(self.args.month_start, self.args.month_end):
-                    if await cache.exists(self.args.outlet, year, month):
+                    if await cache.exists(self._slug, year, month):
                         self.log.info(
                             f"  Skipping {year}-{month:02d} (S3 cache hit)"
                         )
@@ -259,14 +259,14 @@ class CorpusScraper(runner.Runner):
             return None
         await cache.upload(
             output_file,
-            self.args.outlet,
+            self._slug,
             year,
             month)
         self.log.success(f"  ✓ {year}-{month:02d} complete and uploaded to S3")
 
     @cached_property
     def _slug(self) -> str:
-        return self.args.outlet.lower().replace(" ", "_")
+        return self.args.outlet.lower().replace(" ", "_") + "_v2"
 
     def _already_done(self) -> set[str]:
         if not self.output_path.exists():
