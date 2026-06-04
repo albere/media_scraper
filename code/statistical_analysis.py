@@ -113,30 +113,44 @@ def load_ons_quarterly(xlsx_path):
     return ons
 
 
-def load_hatecrime(ods_path):
+def load_hatecrime(csv_path, value_col="Race_Hate_Crime_Excl_Met"):
     """
-    Load Home Office racial hate crime annual data from ODS file.
+    Load Home Office racial hate crime annual data from the cleaned CSV.
+
+    The value column is selectable so the analysis can be run against either
+    the excluding-Metropolitan-Police series (default, matches the original
+    coursework analysis — the Met series has separate recording
+    discontinuities) or the all-forces national total. Rows with a blank
+    value, or matching the excluded year (2019/20 COVID gap), are dropped.
+
+    Expected columns: Year_Ending_March plus the chosen value column.
     Returns DataFrame with columns: fy_label, fy_start_year, race_hate_crimes
     """
-    df = pd.read_excel(ods_path, sheet_name="2", engine="odf", header=None)
+    df = pd.read_csv(csv_path)
 
-    # Row 6 has year headers, row 7 has Race values
-    headers = df.iloc[6, 1:15].tolist()
-    values = df.iloc[7, 1:15].tolist()
+    label_col = "Year_Ending_March"
+
+    for col in (label_col, value_col):
+        if col not in df.columns:
+            raise ValueError(
+                f"Expected column '{col}' not found in {csv_path}. "
+                f"Columns present: {list(df.columns)}"
+            )
 
     records = []
-    for h, v in zip(headers, values):
-        label = str(h).strip()
+    for _, r in df.iterrows():
+        label = str(r[label_col]).strip()
 
-        # Skip excluded year
+        # Skip excluded year (COVID recording disruption)
         if HATECRIME_EXCLUDE_YEAR in label:
             continue
 
-        # Skip [x] values
-        if str(v).strip() == "[x]":
+        value = r[value_col]
+
+        # Skip blank / non-numeric values (e.g. the [x] year)
+        if pd.isna(value):
             continue
 
-        # Parse "2011/12" → start year 2011
         fy_match = re.match(r'(\d{4})/(\d{2})', label)
         if not fy_match:
             continue
@@ -146,12 +160,13 @@ def load_hatecrime(ods_path):
         records.append({
             "fy_label": label,
             "fy_start_year": start_year,
-            "race_hate_crimes": int(v),
+            "race_hate_crimes": int(value),
         })
 
     hc = pd.DataFrame(records)
     print(f"  Hate crime: {len(hc)} annual points loaded "
-          f"({hc['fy_label'].iloc[0]} to {hc['fy_label'].iloc[-1]})")
+          f"({hc['fy_label'].iloc[0]} to {hc['fy_label'].iloc[-1]}; "
+          f"source column: {value_col})")
     return hc
 
 
@@ -358,6 +373,26 @@ def run_anova(agg_df, outcome_col, outcome_label, outlets):
                 t: valid[valid["tertile"] == t][feat].mean()
                 for t in ["low", "mid", "high"]
             }
+            group_sds = {
+                t: valid[valid["tertile"] == t][feat].std(ddof=1)
+                for t in ["low", "mid", "high"]
+            }
+
+            # One-way ANOVA decomposition for df, MSE, and partial eta squared.
+            # (For one-way ANOVA, partial eta squared == eta squared.)
+            grand_mean = np.concatenate(groups).mean()
+            n_total = sum(len(g) for g in groups)
+            k = len(groups)
+
+            ss_between = sum(len(g) * (g.mean() - grand_mean) ** 2 for g in groups)
+            ss_within = sum(((g - g.mean()) ** 2).sum() for g in groups)
+            ss_total = ss_between + ss_within
+
+            df_between = k - 1
+            df_within = n_total - k
+
+            ms_within = ss_within / df_within if df_within > 0 else float("nan")
+            partial_eta_sq = ss_between / ss_total if ss_total > 0 else float("nan")
 
             results.append({
                 "outlet": outlet,
@@ -365,12 +400,19 @@ def run_anova(agg_df, outcome_col, outcome_label, outlets):
                 "feature_label": FEATURES[feat],
                 "outcome": outcome_label,
                 "n": len(valid),
+                "df_between": df_between,
+                "df_within": df_within,
                 "F": round(f_stat, 4),
+                "MSE": round(ms_within, 6),
+                "partial_eta_sq": round(partial_eta_sq, 4),
                 "p_value": round(p, 6),
                 "sig": sig_stars(p),
                 "mean_low": round(group_means.get("low", float("nan")), 4),
+                "sd_low": round(group_sds.get("low", float("nan")), 4),
                 "mean_mid": round(group_means.get("mid", float("nan")), 4),
+                "sd_mid": round(group_sds.get("mid", float("nan")), 4),
                 "mean_high": round(group_means.get("high", float("nan")), 4),
+                "sd_high": round(group_sds.get("high", float("nan")), 4),
             })
 
     return results
@@ -455,7 +497,14 @@ def main():
     parser.add_argument("--ons", required=True,
                         help="Path to ONS LTIM xlsx file")
     parser.add_argument("--hatecrime", required=True,
-                        help="Path to Home Office hate crime ODS file")
+                        help="Path to cleaned hate crime CSV "
+                             "(with Year_Ending_March, Race_Hate_Crime_* columns)")
+    parser.add_argument("--hatecrime-col", default="Race_Hate_Crime_Excl_Met",
+                        choices=["Race_Hate_Crime_Excl_Met",
+                                 "Race_Hate_Crime_All_Forces",
+                                 "Race_Hate_Crime_Met"],
+                        help="Which hate crime series to use "
+                             "(default: Excl_Met, matches original coursework)")
     parser.add_argument("--output", required=True,
                         help="Output directory for results")
 
@@ -474,7 +523,7 @@ def main():
           f"{len(features['outlet'].unique())} outlets")
 
     ons = load_ons_quarterly(args.ons)
-    hc = load_hatecrime(args.hatecrime)
+    hc = load_hatecrime(args.hatecrime, value_col=args.hatecrime_col)
 
     outlets = sorted(features["outlet"].unique())
     print(f"  Outlets: {outlets}")
@@ -547,12 +596,13 @@ def main():
     sig_anova = anova_df[anova_df["p_value"] <= 0.05]
     if len(sig_anova) > 0:
         print(f"\n  Significant ANOVA results (p <= 0.05): {len(sig_anova)}")
-        print(f"  {'outlet':20s}  {'feature':25s}  {'outcome':15s}  "
-              f"{'F':>7s}  {'p':>9s}  {'low':>7s}  {'mid':>7s}  {'high':>7s}")
+        print(f"  {'outlet':20s}  {'feature':25s}  {'F(df1,df2)':>14s}  "
+              f"{'MSE':>9s}  {'np2':>5s}  {'p':>9s}")
         for _, r in sig_anova.iterrows():
-            print(f"  {r['outlet']:20s}  {r['feature']:25s}  {r['outcome']:15s}  "
-                  f"{r['F']:7.2f}  {r['p_value']:9.6f} {r['sig']}  "
-                  f"{r['mean_low']:7.4f}  {r['mean_mid']:7.4f}  {r['mean_high']:7.4f}")
+            fdf = f"F({r['df_between']},{r['df_within']})={r['F']:.2f}"
+            print(f"  {r['outlet']:20s}  {r['feature']:25s}  {fdf:>14s}  "
+                  f"{r['MSE']:9.4f}  {r['partial_eta_sq']:5.3f}  "
+                  f"{r['p_value']:9.6f} {r['sig']}")
     else:
         print("  No significant ANOVA results at p <= 0.05")
 

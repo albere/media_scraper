@@ -77,7 +77,7 @@ def main() -> None:
                         help="Exclusive end month (e.g. 13 processes all months 1-12)")
     parser.add_argument(
         "--keywords",
-        default="immigration,asylum,migrants,refugees,borders",
+        default="immigration,asylum,migrants,refugees,borders,migration,migrant,refugee,border,immigrant,immigrants",
         help="Comma-separated keywords used to build the API query (joined with OR)",
     )
     parser.add_argument("--min-words", type=int, default=200)

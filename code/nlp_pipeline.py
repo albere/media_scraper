@@ -625,6 +625,8 @@ def run_pipeline(input_paths, output_path, threshold=IMMIGRATION_THRESHOLD):
                 df["outlet"] = "express"
             elif "independent" in stem:
                 df["outlet"] = "independent"
+            elif "mirror" in stem:
+                df["outlet"] = "mirror"
             else:
                 df["outlet"] = stem
             print(f"(inferred outlet: {df['outlet'].iloc[0]}) ", end="")
