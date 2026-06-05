@@ -1,4 +1,7 @@
-name: Full corpus run
+# Independent corpus scrape: manual (workflow_dispatch) re-scrape of The Independent,
+# 2022-2025, on GitHub-hosted runners, uploading results to S3.
+# AWS auth via OIDC role assumption; no static credentials stored.
+name: Independent corpus scrape
 
 on:
   workflow_dispatch:
@@ -70,7 +73,7 @@ jobs:
         path: "*_corpus.csv"
         if-no-files-found: ignore
 
-  aggregate:
+  verify-upload:
     needs: scrape
     runs-on: ubuntu-latest
     permissions:
